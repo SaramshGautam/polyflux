@@ -14,7 +14,12 @@ import {
   faClockRotateLeft,
 } from "@fortawesome/free-solid-svg-icons";
 
-const ChatBot = ({ messages, setMessages, toggleSidebar }) => {
+const ChatBot = ({
+  messages,
+  setMessages,
+  toggleSidebar,
+  externalMessages = [],
+}) => {
   const [userInput, setUserInput] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -23,6 +28,13 @@ const ChatBot = ({ messages, setMessages, toggleSidebar }) => {
     x: window.innerWidth - 400 - 20,
     y: window.innerHeight - 540 - 20,
   });
+
+  useEffect(() => {
+    if (externalMessages && externalMessages.length > 0) {
+      setIsOpen(true);
+      setMessages((prev) => [...prev, ...externalMessages]);
+    }
+  }, [externalMessages]);
 
   useEffect(() => {
     const handleExternalTrigger = (e) => {
@@ -37,8 +49,8 @@ const ChatBot = ({ messages, setMessages, toggleSidebar }) => {
           });
         }
 
-        // const note = `Selected Content: ${e.detail.snippet}`;
-        // setMessages((prev) => [...prev, { sender: "bot", text: note }]);
+        const note = `💡 Suggestion: ${e.detail.snippet}`;
+        setMessages((prev) => [...prev, { sender: "bot", text: note }]);
       } else {
         setIsOpen(true);
         if (e.detail?.position) {
@@ -160,6 +172,22 @@ const ChatBot = ({ messages, setMessages, toggleSidebar }) => {
                         {line}
                       </p>
                     ))}
+
+                    {msg.type && (
+                      <div className="chatbot-nudge-type">
+                        <strong>Type:</strong> {msg.type}
+                      </div>
+                    )}
+
+                    {msg.chips && msg.chips.length > 0 && (
+                      <div className="chatbot-nudge-chips">
+                        {msg.chips.map((chip, i) => (
+                          <div key={i} className="chatbot-chip">
+                            {chip}
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     {msg.image_urls && Array.isArray(msg.image_urls) && (
                       <div

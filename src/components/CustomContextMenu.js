@@ -33,6 +33,7 @@ export default function CustomContextMenu({
   actionHistory,
   setActionHistory,
   // togglePanel,
+  onNudge,
   ...props
 }) {
   const editor = useEditor();
@@ -491,6 +492,76 @@ export default function CustomContextMenu({
     }
   };
 
+  // const handleTriggerAgentsClick = async () => {
+  //   try {
+  //     const canvasId = `${className}_${projectName}_${teamName}`;
+  //     console.log("Triggering agents for Canvas ID:", canvasId);
+
+  //     const res = await fetch("http://localhost:8080/process", {
+  //       method: "POST",
+  //       headers: {
+  //         "Content-Type": "application/json",
+  //       },
+  //       body: JSON.stringify({ canvas_id: canvasId }),
+  //     });
+
+  //     const result = await res.json();
+  //     console.log("Agents triggered successfully:", result);
+  //   } catch (error) {
+  //     console.error("Error triggering agents:", error);
+  //   }
+  // };
+
+  const handleTriggerAgentsClick = async () => {
+    try {
+      const canvasId = `${className}_${projectName}_${teamName}`;
+      console.log("Triggering agents for Canvas ID:", canvasId);
+
+      const res = await fetch("http://localhost:8080/process", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ canvas_id: canvasId }),
+      });
+
+      const result = await res.json();
+      console.log("Agents triggered successfully:", result);
+
+      if (result?.nudges && result.nudges.length > 0) {
+        const topNudge = result.nudges[0];
+
+        // if (onNudge) {
+        //   onNudge(topNudge);
+        // }
+
+        if (onNudge) {
+          onNudge({
+            sender: "bot",
+            text: topNudge.message,
+            image_urls: topNudge.image_urls || null,
+            type: topNudge.type,
+            chips: topNudge.chips || [],
+          });
+        }
+
+        // window.dispatchEvent(
+        //   new CustomEvent("trigger-chatbot", {
+        //     detail: {
+        //       snippet: topNudge.message,
+        //       source: `agent-${topNudge.type}`,
+        //       position,
+        //     },
+        //   })
+        // );
+      } else {
+        console.log("No nudges returned from agents.");
+      }
+    } catch (error) {
+      console.error("Error triggering agents:", error);
+    }
+  };
+
   return (
     <div onContextMenu={handleContextMenu}>
       <DefaultContextMenu {...props}>
@@ -597,6 +668,17 @@ export default function CustomContextMenu({
           >
             <span className="tlui-button__label" draggable="false">
               Suggest Clusters
+            </span>
+          </button>
+
+          <button
+            className="tlui-button tlui-button__menu"
+            tabIndex={-2}
+            style={{ backgroundColor: "#6a1b9a", color: "white" }}
+            onClick={handleTriggerAgentsClick}
+          >
+            <span className="tlui-button__label" draggable="false">
+              Trigger Agents
             </span>
           </button>
         </TldrawUiMenuGroup>

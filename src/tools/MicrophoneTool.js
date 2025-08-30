@@ -1,4 +1,4 @@
-import { StateNode } from "tldraw";
+import { StateNode, createShapeId } from "tldraw";
 
 export class MicrophoneTool extends StateNode {
   static id = "microphone";
@@ -17,14 +17,15 @@ export class MicrophoneTool extends StateNode {
       console.log("Audio recording finished:", url);
 
       const point = this.editor.inputs.currentPagePoint;
+      const shapeId = createShapeId();
+
       this.editor.createShape({
-        id: `audio:${Date.now()}`,
-        type: "audio",
+        id: shapeId,
+        type: "embed",
         props: {
           w: 300,
           h: 80,
-          color: "black",
-          audioUrl: url,
+          url: url,
         },
         x: point.x,
         y: point.y,

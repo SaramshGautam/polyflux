@@ -118,3 +118,26 @@
   background-color: rgb(57, 57, 58);
   color: #ffffff;
 } */
+
+.chatbot-nudge-type {
+  font-size: 0.85rem;
+  color: #666;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+.chatbot-nudge-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.chatbot-chip {
+  background-color: #f0f0f0;
+  border-radius: 12px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  border: 1px solid #ccc;
+  color: #333;
+}
