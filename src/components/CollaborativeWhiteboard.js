@@ -211,19 +211,6 @@ const CollaborativeWhiteboard = () => {
     }
   }, [className, projectName, teamName]);
 
-  if (!roomId) return null;
-
-  //   function getSelectedShapeIds() {
-  //     try {
-  //       const editor = editorInstance.current;
-  //       if (!editor) return [];
-  //       console.log("editorInstance:", editor.getSelectedShapeIds());
-  //       return Array.from(editor.getSelectedShapeIds());
-  //     } catch {
-  //       return [];
-  //     }
-  //   }
-
   const recordOnce = useCallback((maxDurationMs = 10000) => {
     return new Promise(async (resolve, reject) => {
       let stream = null;
@@ -491,6 +478,8 @@ const CollaborativeWhiteboard = () => {
   );
 
   const toolsMemo = useMemo(() => [...defaultTools, ...CUSTOM_TOOLS], []);
+
+  if (!roomId) return null;
 
   return (
     <div className="main-container" style={{ position: "fixed", inset: 0 }}>
