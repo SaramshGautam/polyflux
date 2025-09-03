@@ -517,13 +517,16 @@ export default function CustomContextMenu({
       const canvasId = `${className}_${projectName}_${teamName}`;
       console.log("Triggering agents for Canvas ID:", canvasId);
 
-      const res = await fetch("http://localhost:8080/process", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ canvas_id: canvasId }),
-      });
+      const res = await fetch(
+        "https://rv4u3xtdyi.execute-api.us-east-2.amazonaws.com/Prod/process",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ canvas_id: canvasId }),
+        }
+      );
 
       const result = await res.json();
       console.log("Agents triggered successfully:", result);
