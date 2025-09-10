@@ -34,6 +34,7 @@ export default function CustomContextMenu({
   setActionHistory,
   // togglePanel,
   onNudge,
+  onTargetsChange,
   ...props
 }) {
   const editor = useEditor();
@@ -45,6 +46,44 @@ export default function CustomContextMenu({
   const { className, projectName, teamName } = useParams();
   const [showAIInput, setShowAIInput] = useState(false);
   const [aiQuery, setAIQuery] = useState("");
+  const [agentsLoading, setAgentsLoading] = useState(false);
+
+  const getSelectedIds = () => Array.from(editor.getSelectedShapeIds?.() ?? []);
+
+  const getSelectedShapeSafe = (id) => {
+    try {
+      return id ? editor.getShape(id) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    if (!editor) return;
+
+    const updateSelection = () => {
+      const ids = getSelectedIds();
+      onTargetsChange?.(ids); // ✅ bubble up target IDs
+      // const first = getSelectedShapeSafe(ids[0]);
+      // setSelectedShape(first || null);
+      setSelectedShape(ids.length === 1 ? editor.getShape(ids[0]) : null);
+    };
+
+    // initial
+    updateSelection();
+
+    // subscribe to store changes affecting selection
+    const unlisten = editor.store.listen(
+      ({ changes }) => {
+        if (changes?.selectedIds) updateSelection();
+      },
+      { scope: "user" }
+    );
+
+    return () => {
+      unlisten?.();
+    };
+  }, [editor, onTargetsChange, setSelectedShape]);
 
   useEffect(() => {
     if (!editor || !className || !projectName || !teamName) return;
@@ -327,15 +366,42 @@ export default function CustomContextMenu({
 
   const handleContextMenu = (event) => {
     event.preventDefault();
+    // const point = editor.screenToPage({ x: event.clientX, y: event.clientY });
+    // const hit = editor.getShapeAtPoint(point);
+    // // const shape = editor.getShapeAtPoint(point);
+
+    // const selectedIds = new Set(editor.getSelectedShapeIds?.() ?? []);
+
+    // if (hit && selectedIds.size === 0) {
+    //   editor.select(hit.id);
+    // }
+
     const point = editor.screenToPage({ x: event.clientX, y: event.clientY });
-    const shape = editor.getShapeAtPoint(point);
+    const hit = editor.getShapeAtPoint(point);
+    const current = new Set(editor.getSelectedShapeIds?.() ?? []);
 
-    if (shape) {
-      setSelectedShape(shape);
-      editor.select(shape.id);
+    if (!hit) return;
 
-      // console.log("Shape ID:", shape.id);
+    // Allow additive/toggle selection on right-click with modifiers
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      if (current.has(hit.id)) current.delete(hit.id);
+      else current.add(hit.id);
+      editor.select([...current]);
+      return;
     }
+
+    // If nothing selected, right-click selects the hit shape
+    if (current.size === 0) {
+      editor.select(hit.id);
+    }
+
+    // if (shape) {
+    //   editor.select(shape.id);
+    //   setSelectedShape(shape);
+    //   onTargetsChange?.([shape.id]);
+
+    //   // console.log("Shape ID:", shape.id);
+    // }
   };
 
   // --- CLUSTERING POSITION HELPERS ---
@@ -514,12 +580,14 @@ export default function CustomContextMenu({
 
   const handleTriggerAgentsClick = async () => {
     try {
+      setAgentsLoading(true);
       const canvasId = `${className}_${projectName}_${teamName}`;
       console.log("Triggering agents for Canvas ID:", canvasId);
 
       const res = await fetch(
         "https://rv4u3xtdyi.execute-api.us-east-2.amazonaws.com/Prod/process",
         {
+          // const res = await fetch("http://localhost:8080/process", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -535,7 +603,7 @@ export default function CustomContextMenu({
         const topNudge = result.nudges[0];
 
         // if (onNudge) {
-        //   onNudge(topNudge);
+        //   onNudge({ sender: "bot", topNudge });
         // }
 
         if (onNudge) {
@@ -545,6 +613,7 @@ export default function CustomContextMenu({
             image_urls: topNudge.image_urls || null,
             type: topNudge.type,
             chips: topNudge.chips || [],
+            targets: topNudge.targets || [],
           });
         }
 
@@ -562,6 +631,16 @@ export default function CustomContextMenu({
       }
     } catch (error) {
       console.error("Error triggering agents:", error);
+      window.dispatchEvent(
+        new CustomEvent("trigger-chatbot", {
+          detail: {
+            snippet: "⚠️ Agent trigger failed. Check logs.",
+            source: "agent-error",
+          },
+        })
+      );
+    } finally {
+      setAgentsLoading(false);
     }
   };
 
@@ -663,7 +742,7 @@ export default function CustomContextMenu({
             </kbd>
           </button>
 
-          <button
+          {/* <button
             className="tlui-button tlui-button__menu"
             tabIndex={-2}
             style={{ backgroundColor: "#23447b", color: "white" }}
@@ -672,16 +751,26 @@ export default function CustomContextMenu({
             <span className="tlui-button__label" draggable="false">
               Suggest Clusters
             </span>
-          </button>
+          </button> */}
 
           <button
             className="tlui-button tlui-button__menu"
             tabIndex={-2}
             style={{ backgroundColor: "#6a1b9a", color: "white" }}
             onClick={handleTriggerAgentsClick}
+            disabled={agentsLoading}
+            aria-busy={agentsLoading}
+            aria-live="polite"
           >
             <span className="tlui-button__label" draggable="false">
-              Trigger Agents
+              {agentsLoading ? (
+                <>
+                  Triggering... <span className="spinner" aria-hidden="true" />
+                </>
+              ) : (
+                // "Trigger Agents"
+                "AI Help!"
+              )}
             </span>
           </button>
         </TldrawUiMenuGroup>

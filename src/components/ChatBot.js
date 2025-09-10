@@ -19,6 +19,11 @@ const ChatBot = ({
   setMessages,
   toggleSidebar,
   externalMessages = [],
+  canvasId,
+  role,
+  user_id,
+  targets,
+  params,
 }) => {
   const [userInput, setUserInput] = useState("");
   const [isOpen, setIsOpen] = useState(false);
@@ -68,6 +73,90 @@ const ChatBot = ({
     };
   }, []);
 
+  const handleChipClick = async (chip, roleType) => {
+    // setUserInput(chip);
+    // console.log("Chip clicked:", chip);
+    console.log("Sending /act payload:", {
+      chip,
+      canvas_id: canvasId,
+      role: roleType || "catalyst",
+      user_id,
+      targets: targets,
+      params,
+    });
+    // setLoading(true);
+
+    const newMessages = [
+      ...messages,
+      { sender: "user", text: chip },
+      { sender: "bot", text: `🔧 Running action: ${chip}` },
+    ];
+    setMessages(newMessages);
+
+    try {
+      const response = await fetch("http://localhost:8080/act", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chip: chip,
+          canvas_id: canvasId,
+          role: roleType || "catalyst",
+          user_id: user_id,
+          targets: targets || [],
+          params: params || {},
+        }),
+      });
+
+      const data = await response.json();
+      // const botReply = data.message || "Action completed.";
+      // const botReply = data.result || "Action completed.";
+      if (data.error) {
+        setMessages([
+          ...newMessages,
+          { sender: "bot", text: `⚠️ Action error: ${data.error}` },
+        ]);
+        return;
+      }
+      const result = data.result ?? data;
+      // const botReply = result.outputs.content;
+      // setMessages([...newMessages, { sender: "bot", text: botReply }]);
+      console.log("Action response:", result);
+      // console.log("Action response:", botReply);
+
+      // const reply = summarizeActResult(result, {
+      //   chip: result.chip,
+      //   role: result.role,
+      // });
+      console.log(`Bot Reply (raw):`, result?.output?.[0]?.content);
+
+      const botReply = formatBotReply(
+        // result?.outputs?.[0]?.content ?? "Action completed."
+        result?.outputs?.find((o) => o?.type === "summary")?.content ??
+          result?.output?.[0]?.content ??
+          "Action completed."
+      );
+      // const images = extractImageUrls(result);
+      console.log("Action reply:", botReply);
+
+      setMessages([
+        ...newMessages,
+        {
+          sender: "bot",
+          text: botReply,
+          type: roleType,
+          // chips: result.chip || [],
+          // image_urls: extractImageUrls(result),
+        },
+      ]);
+    } catch (error) {
+      console.error(error);
+      const botReply = "Error executing action.";
+      console.log("Action error:", botReply);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSend = async () => {
     if (!userInput.trim()) return;
 
@@ -85,12 +174,16 @@ const ChatBot = ({
 
       const data = await response.json();
       if (data.reply) {
+        // const reply = summarizeActResult(data.result, { chip: chipText, role: roleType });
         setMessages([
           ...newMessages,
           {
             sender: "bot",
             text: formatBotReply(data.reply),
             image_urls: data.image_urls || null,
+            // image_urls: (data.result.created_shapes || [])
+            // .filter((s) => s.type === "image" && s.imageUrl)
+            // .map((s) => s.imageUrl),
           },
         ]);
       } else {
@@ -108,6 +201,67 @@ const ChatBot = ({
     } finally {
       setLoading(false);
     }
+  };
+
+  // put near top of component
+  const toLines = (val) => {
+    if (val === null || val === undefined) return [];
+    if (typeof val === "string") return val.split("\n");
+    if (typeof val === "number" || typeof val === "boolean")
+      return String(val).split("\n");
+    // objects / arrays → pretty JSON
+    try {
+      return JSON.stringify(val, null, 2).split("\n");
+    } catch {
+      return [String(val)];
+    }
+  };
+
+  // Turn /act result into a readable chat message
+  const summarizeActResult = (res, { chip, role }) => {
+    if (!res) return `✅ ${chip} via ${role || "agent"} — no result`;
+    if (res.status === "error" || res.error)
+      return `❌ ${res.error || "Action failed"}`;
+
+    // 1) collect LLM outputs
+    const chunks = Array.isArray(res.outputs)
+      ? res.outputs.map((o) => {
+          const tag = o?.type ? `[${o.type}] ` : "";
+          const content =
+            typeof o?.content === "string"
+              ? o.content
+              : JSON.stringify(o?.content, null, 2);
+          return `${tag}${content}`;
+        })
+      : [];
+
+    // 2) created shapes (ids)
+    const created = res.created_shapes?.length
+      ? `Created shapes: ${res.created_shapes.map((s) => s.id).join(", ")}`
+      : "";
+
+    // 3) any skipped
+    const skipped = res.skipped?.length
+      ? `Skipped: ${res.skipped.length} target(s)`
+      : "";
+
+    // 4) header + parts
+    return [
+      `✅ ${chip} via ${role || "agent"}`,
+      chunks.join("\n\n"),
+      created,
+      skipped,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  };
+
+  // Extract any image URLs from the standardized result
+  const extractImageUrls = (res) => {
+    if (!res?.created_shapes) return [];
+    return res.created_shapes
+      .filter((s) => s.type === "image" && s.imageUrl)
+      .map((s) => s.imageUrl);
   };
 
   return (
@@ -167,7 +321,12 @@ const ChatBot = ({
               <div className="chatbot-messages">
                 {messages.map((msg, idx) => (
                   <div key={idx} className={`chatbot-message ${msg.sender}`}>
-                    {msg.text.split("\n").map((line, i) => (
+                    {/* {msg.text.split("\n").map((line, i) => (
+                      <p key={i} style={{ margin: 0 }}>
+                        {line}
+                      </p>
+                    ))} */}
+                    {toLines(msg.text).map((line, i) => (
                       <p key={i} style={{ margin: 0 }}>
                         {line}
                       </p>
@@ -182,7 +341,15 @@ const ChatBot = ({
                     {msg.chips && msg.chips.length > 0 && (
                       <div className="chatbot-nudge-chips">
                         {msg.chips.map((chip, i) => (
-                          <div key={i} className="chatbot-chip">
+                          <div
+                            key={i}
+                            className="chatbot-chip"
+                            onClick={() => {
+                              handleChipClick(chip, msg.type);
+                            }}
+                            title={`Click to use "${chip}"`}
+                            style={{ cursor: "pointer" }}
+                          >
                             {chip}
                           </div>
                         ))}

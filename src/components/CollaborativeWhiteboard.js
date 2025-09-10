@@ -53,6 +53,8 @@ const CollaborativeWhiteboard = () => {
   const [externalMessages, setExternalMessages] = useState([]);
   const [shapeReactions, setShapeReactions] = useState({});
   const [selectedShape, setSelectedShape] = useState(null);
+  const [selectedTargets, setSelectedTargets] = useState([]);
+
   const [commentCounts, setCommentCounts] = useState({});
   const [comments, setComments] = useState({});
   const [actionHistory, setActionHistory] = useState([]);
@@ -85,6 +87,7 @@ const CollaborativeWhiteboard = () => {
   }, []);
 
   const handleNudgeFromContextMenu = useCallback((nudgeMessage) => {
+    console.log("Nudge message from context menu:", nudgeMessage);
     setExternalMessages((prev) => [...prev, nudgeMessage]);
   }, []);
 
@@ -415,6 +418,7 @@ const CollaborativeWhiteboard = () => {
           actionHistory={actionHistory}
           setActionHistory={setActionHistory}
           onNudge={handleNudgeFromContextMenu}
+          onTargetsChange={setSelectedTargets}
         />
       ),
       InFrontOfTheCanvas: (props) => (
@@ -504,6 +508,14 @@ const CollaborativeWhiteboard = () => {
         messages={messages}
         setMessages={setMessages}
         externalMessages={externalMessages}
+        user_id={
+          auth.currentUser?.displayName || auth.currentUser?.email || "anon"
+        }
+        // canvasId={roomId}
+        canvasId={`${className}_${projectName}_${teamName}`}
+        role={"catalyst"}
+        targets={selectedTargets}
+        params={{}}
       />
       <ChatSidebar
         messages={messages}
