@@ -94,18 +94,22 @@ const ChatBot = ({
     setMessages(newMessages);
 
     try {
-      const response = await fetch("http://localhost:8080/act", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chip: chip,
-          canvas_id: canvasId,
-          role: roleType || "catalyst",
-          user_id: user_id,
-          targets: targets || [],
-          params: params || {},
-        }),
-      });
+      // const response = await fetch("http://localhost:8080/act", {
+      const response = await fetch(
+        "https://rv4u3xtdyi.execute-api.us-east-2.amazonaws.com/Prod/act",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chip: chip,
+            canvas_id: canvasId,
+            role: roleType || "catalyst",
+            user_id: user_id,
+            targets: targets || [],
+            params: params || {},
+          }),
+        }
+      );
 
       const data = await response.json();
       // const botReply = data.message || "Action completed.";
