@@ -237,25 +237,26 @@ const ChatBot = ({
     setLoading(true);
 
     try {
-      const response = await fetch("http://127.0.0.1:8090/api/chatgpt-helper", {
-        // const response = await fetch(
-        //   "https://flask-app-jqwkqdscaq-uc.a.run.app/api/chatgpt-helper",
-        //   {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: userInput,
-          canvas_id: canvasId,
-          role,
-          user_id,
-          targets: targets || [],
-          params: params || {},
-          context: {
-            images: context.images,
-            texts: context.texts,
-          },
-        }),
-      });
+      // const response = await fetch("http://127.0.0.1:8090/api/chatgpt-helper", {
+      const response = await fetch(
+        "https://flask-app-jqwkqdscaq-uc.a.run.app/api/chatgpt-helper",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: userInput,
+            canvas_id: canvasId,
+            role,
+            user_id,
+            targets: targets || [],
+            params: params || {},
+            context: {
+              images: context.images,
+              texts: context.texts,
+            },
+          }),
+        }
+      );
 
       const data = await response.json();
       if (data.reply) {
