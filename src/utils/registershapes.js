@@ -10,6 +10,26 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebaseConfig";
 
+const pickUrlFromProps = (props) => {
+  console.log("pickUrlFromProps props =", props);
+  if (!props) return null;
+  // Prefer 'src' for backward compatibility, then 'url', then 'imageUrl'
+  return (
+    props?.src ||
+    props?.url ||
+    props?.imageUrl ||
+    props?.source ||
+    props?.link ||
+    props?.dataURL ||
+    props?.dataUrl ||
+    props?.imageSrc ||
+    props?.imageSrcUrl ||
+    props?.imageSource ||
+    null
+  );
+};
+// props?.src || props?.url || props?.imageUrl || null;
+
 /**
  * Registers a shape in Firestore under the correct classroom/project/team.
  *
@@ -98,6 +118,11 @@ export async function registerShape(newShape, userContext) {
   }
 
   const { id: shapeID, type: shapeType, x, y, props } = newShape;
+
+  console.log(
+    `Registering shape ${shapeID} of type ${shapeType} at position (${x}, ${y}) with props:`,
+    props
+  );
   const { className, projectName, teamName, userId } = userContext;
 
   if (
@@ -139,6 +164,18 @@ export async function registerShape(newShape, userContext) {
       },
     };
 
+    if (shapeType === "image") {
+      console.log("Registering image shape with props:", props);
+      const url = pickUrlFromProps(props);
+      if (url) {
+        shapeDoc.url = url;
+      } else {
+        console.error(
+          "⚠️ Image shape registered without a valid URL in props."
+        );
+      }
+    }
+
     // Store data in Firestore
     await setDoc(shapeRef, shapeDoc);
     console.log(`✅ Shape ${shapeID} successfully added to Firestore!`);
@@ -152,6 +189,11 @@ export async function registerShape(newShape, userContext) {
 export async function updateShape(shape, userContext) {
   const { className, projectName, teamName, userId } = userContext;
   const { id: shapeID, type: shapeType, props, x, y } = shape;
+
+  console.log(
+    `Updating shape ${shapeID} of type ${shapeType} at position (${x}, ${y}) with props:`,
+    props
+  );
 
   // if (!shapeID || !updatedProps || !userContext) {
   //   console.error("❌ Missing shape ID, updated properties, or user context.");
@@ -178,6 +220,17 @@ export async function updateShape(shape, userContext) {
     if (x !== undefined && y !== undefined) {
       updatePayload.position = { x, y };
     }
+
+    if (shapeType === "image") {
+      console.log("Updating image shape with props:", props);
+      const url = pickUrlFromProps(props);
+      if (url) {
+        updatePayload.url = url;
+      } else {
+        console.log("⚠️ Image shape updated without a valid URL in props.");
+      }
+    }
+
     if (Object.keys(updatePayload).length === 0) {
       console.error("❌ No properties to update.");
       return;
@@ -226,4 +279,22 @@ export async function deleteShape(shapeID, userContext) {
   } catch (error) {
     console.error("❌ Error deleting shape from Firestore:", error);
   }
+}
+
+export async function upsertImageUrl(userContext, shapeId, url) {
+  if (!userContext || !shapeId || !url) return;
+  // ignore temp blob/data urls; only store real http(s)
+  // if (!/^https?:\/\//i.test(url)) return;
+
+  const { className, projectName, teamName } = userContext;
+  const shapeRef = doc(
+    db,
+    `classrooms/${className}/Projects/${projectName}/teams/${teamName}/shapes/${shapeId}`
+  );
+
+  await setDoc(
+    shapeRef,
+    { shapeId, url, updatedAt: serverTimestamp() },
+    { merge: true }
+  );
 }

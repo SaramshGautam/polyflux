@@ -17,6 +17,8 @@ import {
   defaultShapeUtils,
   createTLSchema,
   defaultBindingUtils,
+  useEditor,
+  useValue,
 } from "tldraw";
 import { useSync } from "@tldraw/sync";
 import "tldraw/tldraw.css";
@@ -43,6 +45,7 @@ import ContextToolbarComponent from "./ContextToolbarComponent";
 import { AudioShapeUtil } from "../shapes/AudioShapeUtil";
 import { MicrophoneTool } from "../tools/MicrophoneTool";
 import CustomActionsMenu from "./CustomActionsMenu";
+import { upsertImageUrl } from "../utils/registershapes";
 
 const CUSTOM_TOOLS = [MicrophoneTool];
 const SHAPE_UTILS = [...defaultShapeUtils, AudioShapeUtil];
@@ -404,25 +407,39 @@ const CollaborativeWhiteboard = () => {
 
   const tldrawComponents = useMemo(
     () => ({
-      ContextMenu: (props) => (
-        <CustomContextMenu
-          {...props}
-          shapeReactions={shapeReactions}
-          setShapeReactions={setShapeReactions}
-          selectedShape={selectedShape}
-          setSelectedShape={setSelectedShape}
-          commentCounts={commentCounts}
-          setCommentCounts={setCommentCounts}
-          comments={comments}
-          setComments={setComments}
-          actionHistory={actionHistory}
-          setActionHistory={setActionHistory}
-          onNudge={handleNudgeFromContextMenu}
-          onTargetsChange={setSelectedTargets}
-        />
-      ),
+      ContextMenu: (props) => {
+        const editor = useEditor();
+        const selection = useValue(
+          "selection summary",
+          // setSelectedTargets(selection.ids),
+          () => makeSelectionSummary(editor),
+          [editor]
+        );
+        useEffect(() => {
+          setSelectedTargets(selection.ids);
+        }, [selection.ids]);
+        return (
+          <CustomContextMenu
+            {...props}
+            selection={selection}
+            shapeReactions={shapeReactions}
+            setShapeReactions={setShapeReactions}
+            selectedShape={selectedShape}
+            setSelectedShape={setSelectedShape}
+            commentCounts={commentCounts}
+            setCommentCounts={setCommentCounts}
+            comments={comments}
+            setComments={setComments}
+            actionHistory={actionHistory}
+            setActionHistory={setActionHistory}
+            onNudge={handleNudgeFromContextMenu}
+            onTargetsChange={setSelectedTargets}
+          />
+        );
+      },
       InFrontOfTheCanvas: (props) => (
         <>
+          <SelectionLogger />
           <ContextToolbarComponent
             {...props}
             userRole={userRole}
@@ -436,16 +453,48 @@ const CollaborativeWhiteboard = () => {
           />
         </>
       ),
+      // InFrontOfTheCanvas: (props) => {
+      //   const editor = useEditor();
+      //   const selectedIds = useValue(
+      //     "selected ids",
+      //     () => editor.getSelectedShapeIds(),
+      //     [editor]
+      //   );
+
+      //   useEffect(() => {
+      //     // IDs of everything the user has selected (single or marquee)
+      //     setSelectedTargets(selectedIds);
+      //     // Convenience: keep a single selected shape (or null)
+      //     const onlyOne =
+      //       selectedIds.length === 1 ? editor.getShape(selectedIds[0]) : null;
+      //     setSelectedShape(onlyOne);
+      //   }, [selectedIds, editor]);
+
+      //   return (
+      //     <ContextToolbarComponent
+      //       {...props}
+      //       userRole={userRole}
+      //       selectedShape={selectedShape}
+      //       setShapeReactions={setShapeReactions}
+      //       shapeReactions={shapeReactions}
+      //       commentCounts={commentCounts}
+      //       addComment={addComment}
+      //       setActionHistory={setActionHistory}
+      //       fetchActionHistory={fetchActionHistory}
+      //     />
+      //   );
+      // },
+
       Toolbar: (props) => {
         const tools = useTools();
         const micTool = tools["microphone"];
         const isMicSelected = useIsToolSelected(tools["microphone"]);
 
-        console.log("[Toolbar] tools keys:", Object.keys(tools || {}));
-        console.log(
-          "[Toolbar] microphone exists:",
-          Boolean(tools["microphone"])
-        );
+        // console.log("[Toolbar] tools keys:", Object.keys(tools || {}));
+        // console.log(
+        //   "[Toolbar] microphone exists:",
+        //   Boolean(tools["microphone"])
+        // );
         return (
           <DefaultToolbar {...props}>
             <button
@@ -480,6 +529,172 @@ const CollaborativeWhiteboard = () => {
       // fetchActionHistory,
     ]
   );
+
+  function SelectionLogger() {
+    const editor = useEditor();
+
+    const selectedIds = useValue(
+      "selected ids",
+      () => editor.getSelectedShapeIds(),
+      [editor]
+    );
+
+    // Robust URL resolver for image shapes
+    function resolveImageUrl(editor, shape) {
+      if (!shape) return null;
+      const p = shape.props || {};
+
+      if (p.src) return p.src;
+      if (p.url) return p.url;
+      if (p.imageUrl) return p.imageUrl;
+
+      const assetId = p.assetId;
+      if (assetId) {
+        const assetViaEditor = editor.getAsset?.(assetId);
+        const fromEditor =
+          assetViaEditor?.props?.src ?? assetViaEditor?.src ?? null;
+        if (fromEditor) return fromEditor;
+
+        const storeAsset =
+          editor.store?.get?.asset?.(assetId) ??
+          editor.store?.get?.({ id: assetId, typeName: "asset" }); // extra-safe
+        const fromStore = storeAsset?.props?.src ?? storeAsset?.src ?? null;
+        if (fromStore) return fromStore;
+      }
+
+      return null;
+    }
+
+    useEffect(() => {
+      const bounds =
+        editor.getSelectionPageBounds?.() ??
+        editor.getSelectedPageBounds?.() ??
+        null;
+
+      if (selectedIds.length === 0) {
+        console.log("[selection] cleared");
+        return;
+      }
+
+      const rawShapes = selectedIds
+        .map((id) => editor.getShape(id))
+        .filter(Boolean);
+
+      const summaries = rawShapes.map((shape) => {
+        const label = (
+          shape.props?.title ??
+          shape.props?.name ??
+          shape.props?.text ??
+          ""
+        )
+          .toString()
+          .slice(0, 60);
+
+        const url =
+          shape.type === "image" ? resolveImageUrl(editor, shape) : undefined;
+
+        // Debug once if an image has no url (helps you see what's missing)
+        if (shape.type === "image" && !url) {
+          console.debug("[selection][debug] image without URL", {
+            id: shape.id,
+            props: shape.props,
+            assetId: shape.props?.assetId,
+            asset: shape.props?.assetId
+              ? editor.getAsset?.(shape.props.assetId)
+              : null,
+          });
+        }
+
+        // If we have a *real* (http/https) URL, persist it
+        // if (shape.type === "image" && isWebUrl(url)) {
+        //   void persistToFirestore(shape.id, url);
+        // }
+
+        if (shape.type === "image" && url) {
+          const ctx = { className, projectName, teamName };
+          void upsertImageUrl(ctx, shape.id, url);
+        }
+
+        return { id: shape.id, type: shape.type, label, url };
+      });
+
+      if (summaries.length === 1) {
+        const s = summaries[0];
+        console.log("[selection] single", {
+          id: s.id,
+          type: s.type,
+          url: s.url,
+          label: s.label, // <-- use the computed label, not s.props
+          bounds,
+        });
+      } else {
+        console.log("[selection] multi", {
+          ids: summaries.map((s) => s.id),
+          types: summaries.map((s) => s.type),
+          urls: summaries.map((s) => (s.type === "image" ? s.url : undefined)),
+          count: summaries.length,
+          bounds,
+        });
+      }
+    }, [selectedIds, editor]);
+
+    return null;
+  }
+
+  function resolveImageUrl(editor, shape) {
+    if (!shape) return null;
+    const p = shape.props || {};
+    if (p.src) return p.src;
+    if (p.url) return p.url;
+    if (p.imageUrl) return p.imageUrl;
+    if (p.assetId) {
+      const a = editor.getAsset?.(p.assetId);
+      return a?.props?.src ?? a?.src ?? null;
+    }
+    return null;
+  }
+
+  function extractShapeText(shape) {
+    if (!shape) return "";
+    if (shape.props?.text) return String(shape.props.text);
+    const rt = shape.props?.richText?.content;
+    if (Array.isArray(rt) && rt[0]?.content?.[0]?.text) {
+      return String(rt[0].content[0].text);
+    }
+    return "";
+  }
+
+  function makeSelectionSummary(editor) {
+    const ids = editor.getSelectedShapeIds();
+    const shapes = ids.map((id) => editor.getShape(id)).filter(Boolean);
+    const summaries = shapes.map((s) => ({
+      id: s.id,
+      type: s.type,
+      url: s.type === "image" ? resolveImageUrl(editor, s) : undefined, // data: or https ok
+      text: extractShapeText(s),
+      label: (
+        s.props?.title ??
+        s.props?.name ??
+        s.props?.text ??
+        s.props?.richText?.content?.[0]?.content?.[0]?.text ??
+        ""
+      )
+        .toString()
+        .slice(0, 60),
+    }));
+
+    const bounds =
+      editor.getSelectionPageBounds?.() ??
+      editor.getSelectedPageBounds?.() ??
+      null;
+
+    return {
+      ids,
+      summaries,
+      primary: summaries.length === 1 ? summaries[0] : null,
+      bounds,
+    };
+  }
 
   const toolsMemo = useMemo(() => [...defaultTools, ...CUSTOM_TOOLS], []);
 

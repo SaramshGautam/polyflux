@@ -41,30 +41,87 @@ const ChatBot = ({
     }
   }, [externalMessages]);
 
+  // useEffect(() => {
+  //   const handleExternalTrigger = (e) => {
+  //     if (e.detail?.snippet) {
+  //       setIsOpen(true);
+  //       const newClip = { id: e.detail.source, snip: e.detail.snippet };
+  //       setClipNotes((prev) => [...prev, newClip]);
+  //       if (e.detail.position) {
+  //         setPosition({
+  //           x: e.detail.position.x,
+  //           y: e.detail.position.y,
+  //         });
+  //       }
+
+  //       const note = `💡 Suggestion: ${e.detail.snippet}`;
+  //       setMessages((prev) => [...prev, { sender: "bot", text: note }]);
+  //     } else {
+  //       setIsOpen(true);
+  //       if (e.detail?.position) {
+  //         setPosition({
+  //           x: e.detail.position.x,
+  //           y: e.detail.position.y,
+  //         });
+  //       }
+  //     }
+  //   };
+
+  //   window.addEventListener("trigger-chatbot", handleExternalTrigger);
+  //   return () => {
+  //     window.removeEventListener("trigger-chatbot", handleExternalTrigger);
+  //   };
+  // }, []);
+
   useEffect(() => {
     const handleExternalTrigger = (e) => {
-      if (e.detail?.snippet) {
-        setIsOpen(true);
-        const newClip = { id: e.detail.source, snip: e.detail.snippet };
-        setClipNotes((prev) => [...prev, newClip]);
-        if (e.detail.position) {
-          setPosition({
-            x: e.detail.position.x,
-            y: e.detail.position.y,
-          });
-        }
+      setIsOpen(true);
 
-        const note = `💡 Suggestion: ${e.detail.snippet}`;
-        setMessages((prev) => [...prev, { sender: "bot", text: note }]);
-      } else {
-        setIsOpen(true);
-        if (e.detail?.position) {
-          setPosition({
-            x: e.detail.position.x,
-            y: e.detail.position.y,
+      // Reposition, if provided
+      if (e.detail?.position) {
+        setPosition({
+          x: e.detail.position.x,
+          y: e.detail.position.y,
+        });
+      }
+
+      // Build clips:
+      // - Prefer meta.selection (multi-select) → one clip per selected item
+      // - Else fallback to snippet / image_urls like before
+      const detail = e.detail || {};
+      const nextClips = [];
+
+      if (
+        Array.isArray(detail?.meta?.selection) &&
+        detail.meta.selection.length
+      ) {
+        for (const item of detail.meta.selection) {
+          const snip = item.url || item.text || "";
+          if (!snip) continue;
+          nextClips.push({ id: item.id || Math.random().toString(36), snip });
+        }
+      } else if (Array.isArray(detail.image_urls) && detail.image_urls.length) {
+        for (const url of detail.image_urls) {
+          nextClips.push({
+            id: `${detail.source || "sel"}:${url.slice(0, 24)}`,
+            snip: url,
           });
         }
+      } else if (detail.snippet) {
+        nextClips.push({
+          id: detail.source || Math.random().toString(36),
+          snip: detail.snippet,
+        });
       }
+
+      if (nextClips.length) {
+        setClipNotes((prev) =>
+          // de-duplicate by (id,snip) pair
+          dedupeBy([...prev, ...nextClips], (c) => `${c.id}|${c.snip}`)
+        );
+      }
+
+      // IMPORTANT: do NOT push a "Suggestion:" message anymore.
     };
 
     window.addEventListener("trigger-chatbot", handleExternalTrigger);
@@ -164,21 +221,41 @@ const ChatBot = ({
   const handleSend = async () => {
     if (!userInput.trim()) return;
 
-    const newMessages = [...messages, { sender: "user", text: userInput }];
+    const context = gatherContextFromClips(clipNotes);
+    const newMessages = [
+      ...messages,
+      {
+        sender: "user",
+        text: userInput,
+        image_urls: context.images,
+        attached_texts: context.texts,
+      },
+    ];
+    console.log("New Messages:", newMessages);
     setMessages(newMessages);
     setUserInput("");
     setLoading(true);
 
     try {
-      // const response = await fetch("http://127.0.0.1:5000/api/chatgpt-helper", {
-      const response = await fetch(
-        "https://flask-app-jqwkqdscaq-uc.a.run.app/api/chatgpt-helper",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: userInput }),
-        }
-      );
+      const response = await fetch("http://127.0.0.1:8090/api/chatgpt-helper", {
+        // const response = await fetch(
+        //   "https://flask-app-jqwkqdscaq-uc.a.run.app/api/chatgpt-helper",
+        //   {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: userInput,
+          canvas_id: canvasId,
+          role,
+          user_id,
+          targets: targets || [],
+          params: params || {},
+          context: {
+            images: context.images,
+            texts: context.texts,
+          },
+        }),
+      });
 
       const data = await response.json();
       if (data.reply) {
@@ -270,6 +347,41 @@ const ChatBot = ({
     return res.created_shapes
       .filter((s) => s.type === "image" && s.imageUrl)
       .map((s) => s.imageUrl);
+  };
+
+  // Helpers to classify and gather context from clipNotes
+  const isImageLike = (val) =>
+    typeof val === "string" &&
+    (/^data:image\//i.test(val) || /^https?:\/\//i.test(val));
+
+  const dedupeBy = (arr, keyFn) => {
+    const seen = new Set();
+    const out = [];
+    for (const item of arr) {
+      const key = keyFn(item);
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(item);
+      }
+    }
+    return out;
+  };
+
+  // Given current clipNotes -> { images: string[], texts: string[] }
+  const gatherContextFromClips = (clips) => {
+    const images = [];
+    const texts = [];
+    for (const c of clips) {
+      const snip = c?.snip;
+      if (!snip) continue;
+      if (isImageLike(snip)) images.push(snip);
+      else if (typeof snip === "string" && snip.trim()) texts.push(snip.trim());
+    }
+    // optional de-dup
+    return {
+      images: dedupeBy(images, (x) => x),
+      texts: dedupeBy(texts, (x) => x),
+    };
   };
 
   return (
@@ -389,6 +501,31 @@ const ChatBot = ({
                         ))}
                       </div>
                     )}
+
+                    {Array.isArray(msg.attached_texts) &&
+                      msg.attached_texts.length > 0 && (
+                        <div
+                          className="chatbot-text-attachments"
+                          style={{ marginTop: 10, display: "grid", gap: 8 }}
+                        >
+                          {msg.attached_texts.map((t, i) => (
+                            <div
+                              key={i}
+                              style={{
+                                fontSize: 12,
+                                lineHeight: 1.4,
+                                padding: "6px 8px",
+                                borderRadius: 6,
+                                background: "rgba(0,0,0,0.06)",
+                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-word",
+                              }}
+                            >
+                              {t.length > 400 ? t.slice(0, 400) + "…" : t}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                   </div>
                 ))}
                 {loading && (

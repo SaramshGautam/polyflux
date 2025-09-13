@@ -22,6 +22,7 @@ import { app, db, auth } from "../firebaseConfig";
 import { collection, getDocs } from "firebase/firestore";
 
 export default function CustomContextMenu({
+  selection,
   shapeReactions,
   setShapeReactions,
   selectedShape,
@@ -644,6 +645,68 @@ export default function CustomContextMenu({
     }
   };
 
+  function screenPointForSelection(editor, bounds) {
+    const pagePoint = bounds
+      ? { x: bounds.maxX + 10, y: bounds.maxY - 30 }
+      : editor.getViewportPageCenter?.() ?? { x: 0, y: 0 };
+    const sp = editor.pageToScreen(pagePoint);
+    return {
+      x: Math.min(sp.x, window.innerWidth - 400),
+      y: Math.min(sp.y, window.innerHeight - 500),
+    };
+  }
+
+  function buildAiPayload(selection, editor) {
+    const { summaries = [], primary, bounds } = selection || {};
+    const position = screenPointForSelection(editor, bounds);
+
+    if (primary) {
+      const snippet =
+        primary.type === "image"
+          ? primary.url || "image"
+          : primary.text || primary.label || "";
+
+      const image_urls =
+        primary.type === "image" && primary.url ? [primary.url] : [];
+
+      return {
+        snippet,
+        source: primary.id,
+        position,
+        image_urls,
+        meta: { type: primary.type, selection: summaries },
+      };
+    }
+
+    // multi-select
+    const items = summaries.map((s, i) => ({
+      id: s.id,
+      type: s.type,
+      text: (s.text || s.label || "").slice(0, 200),
+      url: s.type === "image" ? s.url : undefined,
+      idx: i + 1,
+    }));
+
+    const textualSummary = items
+      .map(
+        (it) =>
+          `${it.idx}. ${it.type}` +
+          (it.text ? `: ${it.text}` : "") +
+          (it.url ? ` [${String(it.url).slice(0, 60)}...]` : "")
+      )
+      .join("\n");
+
+    const image_urls = items.map((it) => it.url).filter(Boolean);
+
+    return {
+      snippet: `Selected ${items.length} items:\n${textualSummary}`,
+      source: items.map((it) => it.id),
+      position,
+      image_urls,
+      meta: { selection: items },
+    };
+  }
+
   return (
     <div onContextMenu={handleContextMenu}>
       <DefaultContextMenu {...props}>
@@ -653,15 +716,27 @@ export default function CustomContextMenu({
             tabIndex={-2}
             style={{ backgroundColor: "#306d32", color: "white" }}
             onClick={() => {
-              if (!selectedShape) {
+              // if (!selectedShape) {
+              //   console.log("No shape selected.");
+              //   window.dispatchEvent(new CustomEvent("trigger-chatbot"));
+              //   return;
+              // }
+
+              if (!selection || !selection.ids?.length) {
                 console.log("No shape selected.");
                 window.dispatchEvent(new CustomEvent("trigger-chatbot"));
                 return;
               }
+              const payload = buildAiPayload(selection, editor);
+              console.log("AI Payload:", payload);
+              window.dispatchEvent(
+                new CustomEvent("trigger-chatbot", { detail: payload })
+              );
+              // return;
               // console.log("Selected shape props:", selectedShape.props);
 
               //Extract position of the shape for AI tooktip
-              const bounds = editor.getShapePageBounds(selectedShape);
+              const bounds = editor.getShapePageBounds(selection.primary?.id);
               console.log("Shape bounds:", bounds);
               // const shapeCenter = {
               //   x: (bounds.minX + bounds.maxX) / 2,
