@@ -457,6 +457,13 @@ const ChatBot = ({
     return await res.blob();
   };
 
+  const htmlImg = (url) => {
+    `<img data-chatbot-img="1" alt="chatbot image" src="${url.replace(
+      /"/g,
+      "&quot;"
+    )}">`;
+  };
+
   const copyImage = async (url, key) => {
     // try {
     //   let blob;
@@ -506,7 +513,45 @@ const ChatBot = ({
       }
       await writeImageToClipboard(blob, url, key);
     } catch (e) {
-      console.warn("Bitmap copy failed; copying URL instead:", e);
+      // try {
+      //   const items = {};
+
+      //   // Try to include a real bitmap first
+      //   if (canWriteImages()) {
+      //     try {
+      //       let blob;
+      //       if (url.startsWith("data:")) {
+      //         blob = await (await fetch(url)).blob();
+      //       } else {
+      //         try {
+      //           blob = await fetchBlob(url);
+      //         } catch {
+      //           try {
+      //             blob = await canvasBlob(url);
+      //           } catch {
+      //             blob = await proxyBlob(url);
+      //           }
+      //         }
+      //       }
+      //       items[blob.type || "image/png"] = blob;
+      //     } catch (_) {
+      //       /* fall through to HTML/URL */
+      //     }
+      //   }
+      //   // Always add HTML + text variants so paste can detect image intent
+      //   items["text/html"] = new Blob([htmlImg(url)], { type: "text/html" });
+      //   items["text/plain"] = new Blob([`CB_IMG:${url}`], { type: "text/plain" });
+      //   items["text/uri-list"] = new Blob([url], { type: "text/uri-list" });
+
+      //   await navigator.clipboard.write([new ClipboardItem(items)]);
+      //   badgePing(key);
+      //   notifyCanvas({
+      //     kind: items["image/png"] ? "image" : "image-url",
+      //     content: url,
+      //   });
+      // }
+
+      console.error("Bitmap copy failed; copying URL instead:", e);
       await navigator.clipboard.writeText(url);
       badgePing(key);
       notifyCanvas({ kind: "image-url", content: url });
@@ -647,7 +692,6 @@ const ChatBot = ({
                         {msg.image_urls.map((url, i) => (
                           <div key={i} className="chatbot-image-wrap">
                             <img
-                              crossOrigin="anonymous"
                               src={url}
                               alt={`Generated visual ${i + 1}`}
                               style={{

@@ -517,16 +517,16 @@ const CollaborativeWhiteboard = () => {
       ActionsMenu: (props) => <CustomActionsMenu {...props} />,
     }),
     [
-      // shapeReactions,
-      // selectedShape,
-      // commentCounts,
-      // comments,
-      // actionHistory,
-      // userRole,
-      // handleNudgeFromContextMenu,
-      // addComment,
-      // setActionHistory,
-      // fetchActionHistory,
+      shapeReactions,
+      selectedShape,
+      commentCounts,
+      comments,
+      actionHistory,
+      userRole,
+      handleNudgeFromContextMenu,
+      addComment,
+      setActionHistory,
+      fetchActionHistory,
     ]
   );
 
