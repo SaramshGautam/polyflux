@@ -5,6 +5,7 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faRobot,
   faArrowsUpDownLeftRight,
+  faCopy,
 } from "@fortawesome/free-solid-svg-icons";
 import Draggable from "react-draggable";
 import { Rnd } from "react-rnd";
@@ -33,6 +34,7 @@ const ChatBot = ({
     x: window.innerWidth - 400 - 20,
     y: window.innerHeight - 540 - 20,
   });
+  const [copiedKey, setCopiedKey] = useState(null);
 
   useEffect(() => {
     if (externalMessages && externalMessages.length > 0) {
@@ -171,6 +173,7 @@ const ChatBot = ({
       const data = await response.json();
       // const botReply = data.message || "Action completed.";
       // const botReply = data.result || "Action completed.";
+      console.log(`---data---`, data);
       if (data.error) {
         setMessages([
           ...newMessages,
@@ -234,6 +237,7 @@ const ChatBot = ({
     console.log("New Messages:", newMessages);
     setMessages(newMessages);
     setUserInput("");
+    setClipNotes([]);
     setLoading(true);
 
     try {
@@ -368,7 +372,6 @@ const ChatBot = ({
     return out;
   };
 
-  // Given current clipNotes -> { images: string[], texts: string[] }
   const gatherContextFromClips = (clips) => {
     const images = [];
     const texts = [];
@@ -383,6 +386,131 @@ const ChatBot = ({
       images: dedupeBy(images, (x) => x),
       texts: dedupeBy(texts, (x) => x),
     };
+  };
+
+  const badgePing = (key) => {
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 1200);
+  };
+
+  const notifyCanvas = (payload) => {
+    try {
+      window.dispatchEvent(
+        new CustomEvent("chatbot-copy", { detail: payload })
+      );
+    } catch {}
+  };
+
+  const copyText = async (text, key) => {
+    try {
+      await navigator.clipboard.writeText(text || "");
+      badgePing(key);
+      notifyCanvas({ kind: "text", content: text || "" });
+    } catch (e) {
+      console.error("Copy text failed:", e);
+    }
+  };
+
+  const IMAGE_PROXY_URL =
+    "https://flask-app-jqwkqdscaq-uc.a.run.app/proxy-image?url=";
+  const canWriteImages = () => !!(navigator.clipboard && window.ClipboardItem);
+  const writeImageToClipboard = async (blob, url, key) => {
+    const item = new ClipboardItem({
+      [blob.type || "image/png"]: blob,
+      "text/html": new Blob([`<img src="${url}">`], { type: "text/html" }),
+      "text/plain": new Blob([url], { type: "text/plain" }),
+    });
+    await navigator.clipboard.write([item]);
+    badgePing(key);
+    notifyCanvas({ kind: "image", content: url });
+  };
+  const fetchBlob = async (url) => {
+    const res = await fetch(url, { mode: "cors", credentials: "omit" });
+    if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
+    const ct = res.headers.get("content-type") || "";
+    if (!ct.startsWith("image/")) throw new Error("not an image");
+    return await res.blob();
+  };
+
+  const canvasBlob = (url) =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous"; // needs server CORS
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        const ctx = c.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        c.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error("toBlob failed"))),
+          "image/png"
+        );
+      };
+      img.onerror = () => reject(new Error("image load failed"));
+      img.src = url;
+    });
+
+  const proxyBlob = async (url) => {
+    const res = await fetch(IMAGE_PROXY_URL + encodeURIComponent(url));
+    if (!res.ok) throw new Error("proxy fetch failed");
+    return await res.blob();
+  };
+
+  const copyImage = async (url, key) => {
+    // try {
+    //   let blob;
+    //   // handles https: and data: URIs
+    //   const res = await fetch(url);
+    //   blob = await res.blob();
+
+    //   if (navigator.clipboard && window.ClipboardItem) {
+    //     const item = new ClipboardItem({ [blob.type || "image/png"]: blob });
+    //     await navigator.clipboard.write([item]);
+    //     badgePing(key);
+    //     notifyCanvas({ kind: "image", content: url });
+    //   } else {
+    //     // fallback: copy the URL instead
+    //     await navigator.clipboard.writeText(url);
+    //     badgePing(key);
+    //     notifyCanvas({ kind: "image-url", content: url });
+    //   }
+    // } catch (err) {
+    //   console.error("Image copy failed, falling back to URL:", err);
+    //   try {
+    //     await navigator.clipboard.writeText(url);
+    //     badgePing(key);
+    //     notifyCanvas({ kind: "image-url", content: url });
+    //   } catch (e2) {
+    //     console.error("URL copy failed:", e2);
+    //   }
+    // }
+    try {
+      if (!canWriteImages()) throw new Error("no image clipboard support");
+      let blob;
+      if (url.startsWith("data:")) {
+        blob = await (await fetch(url)).blob();
+      } else {
+        try {
+          // 1) direct fetch → blob
+          blob = await fetchBlob(url);
+        } catch {
+          try {
+            // 2) draw to canvas (requires CORS on the image host)
+            blob = await canvasBlob(url);
+          } catch {
+            // 3) proxy (server fetches and returns with permissive CORS)
+            blob = await proxyBlob(url);
+          }
+        }
+      }
+      await writeImageToClipboard(blob, url, key);
+    } catch (e) {
+      console.warn("Bitmap copy failed; copying URL instead:", e);
+      await navigator.clipboard.writeText(url);
+      badgePing(key);
+      notifyCanvas({ kind: "image-url", content: url });
+    }
   };
 
   return (
@@ -442,6 +570,21 @@ const ChatBot = ({
               <div className="chatbot-messages">
                 {messages.map((msg, idx) => (
                   <div key={idx} className={`chatbot-message ${msg.sender}`}>
+                    {msg.sender === "bot" && (
+                      <button
+                        className="chatbot-copy-btn"
+                        title="Copy reply"
+                        onClick={() =>
+                          copyText(toLines(msg.text).join("\n"), `msg-${idx}`)
+                        }
+                      >
+                        <FontAwesomeIcon icon={faCopy} />
+                      </button>
+                    )}
+                    {copiedKey === `msg-${idx}` && (
+                      <span className="chatbot-copied-pill">Copied</span>
+                    )}
+
                     {/* {msg.text.split("\n").map((line, i) => (
                       <p key={i} style={{ margin: 0 }}>
                         {line}
@@ -488,7 +631,7 @@ const ChatBot = ({
                           marginTop: "10px",
                         }}
                       >
-                        {msg.image_urls.map((url, i) => (
+                        {/* {msg.image_urls.map((url, i) => (
                           <img
                             key={i}
                             src={url}
@@ -499,6 +642,33 @@ const ChatBot = ({
                               objectFit: "cover",
                             }}
                           />
+                        ))} */}
+
+                        {msg.image_urls.map((url, i) => (
+                          <div key={i} className="chatbot-image-wrap">
+                            <img
+                              crossOrigin="anonymous"
+                              src={url}
+                              alt={`Generated visual ${i + 1}`}
+                              style={{
+                                width: "100%",
+                                borderRadius: "6px",
+                                objectFit: "cover",
+                              }}
+                            />
+                            <button
+                              className="chatbot-copy-img-btn"
+                              title="Copy image"
+                              onClick={() => copyImage(url, `img-${idx}-${i}`)}
+                            >
+                              <FontAwesomeIcon icon={faCopy} />
+                            </button>
+                            {copiedKey === `img-${idx}-${i}` && (
+                              <span className="chatbot-copied-pill">
+                                Copied
+                              </span>
+                            )}
+                          </div>
                         ))}
                       </div>
                     )}
