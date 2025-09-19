@@ -457,12 +457,12 @@ const ChatBot = ({
     return await res.blob();
   };
 
-  const htmlImg = (url) => {
-    `<img data-chatbot-img="1" alt="chatbot image" src="${url.replace(
-      /"/g,
-      "&quot;"
-    )}">`;
-  };
+  // const htmlImg = (url) => {
+  //   `<img data-chatbot-img="1" alt="chatbot image" src="${url.replace(
+  //     /"/g,
+  //     "&quot;"
+  //   )}">`;
+  // };
 
   const copyImage = async (url, key) => {
     // try {
