@@ -435,7 +435,7 @@ const ChatBot = ({
   const canvasBlob = (url) =>
     new Promise((resolve, reject) => {
       const img = new Image();
-      // img.crossOrigin = "anonymous"; // needs server CORS
+      img.crossOrigin = "anonymous"; // needs server CORS
       img.onload = () => {
         const c = document.createElement("canvas");
         c.width = img.naturalWidth;
