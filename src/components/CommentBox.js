@@ -179,7 +179,8 @@ export default function CommentBox({
       selectedShape.type || "unknown"
     );
 
-    fetchActionHistory({ className, projectName, teamName }, setActionHistory);
+    // fetchActionHistory({ className, projectName, teamName }, setActionHistory);
+    fetchActionHistory({ className, projectName, teamName });
 
     onClose();
   };

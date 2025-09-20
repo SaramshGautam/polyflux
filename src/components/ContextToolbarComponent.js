@@ -163,10 +163,11 @@ const ContextToolbarComponent = track(
             shapeId,
             shapeType
           );
-          fetchActionHistory(
-            { className, projectName, teamName },
-            setActionHistory
-          );
+          fetchActionHistory({ className, projectName, teamName });
+          // fetchActionHistory(
+          //   { className, projectName, teamName },
+          //   setActionHistory
+          // );
         } else {
           // User is adding a reaction
           await updateDoc(shapeRef, {
@@ -193,10 +194,11 @@ const ContextToolbarComponent = track(
             shapeId,
             shapeType
           );
-          fetchActionHistory(
-            { className, projectName, teamName },
-            setActionHistory
-          );
+          fetchActionHistory({ className, projectName, teamName });
+          // fetchActionHistory(
+          //   { className, projectName, teamName },
+          //   setActionHistory
+          // );
         }
       } catch (error) {
         console.error("Error updating reactions in Firestore:", error);

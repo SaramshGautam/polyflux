@@ -1,5 +1,6 @@
 import React from "react";
 import "../App.css";
+import { getIndefiniteArticle } from "../utils/GetIndefiniteArticle";
 
 export default function HistoryPanel({ actionHistory = [] }) {
   return (
@@ -35,7 +36,7 @@ export default function HistoryPanel({ actionHistory = [] }) {
             return (
               <li key={index} className="historyItem">
                 <strong>{action.userId || "Unknown User"}</strong>{" "}
-                {action.action}
+                {action.action} {getIndefiniteArticle(action.shapeType)}{" "}
                 {action.shapeType}
                 {/* {action.shapeId} */}
                 <div className="timestamp">{formattedTimestamp}</div>

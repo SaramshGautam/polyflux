@@ -112,12 +112,13 @@
 }
 
 .chatbot-message.user {
-  background: #dcf8c6;
+  /* background: #dcf8c6; */
+  background: #dff0ff;
   align-self: flex-end;
 }
 
 .chatbot-message.bot {
-  background: #f1f0f0;
+  background: #e2ffe2;
   align-self: flex-start;
 }
 

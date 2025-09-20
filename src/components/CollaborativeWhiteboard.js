@@ -24,7 +24,7 @@ import { useSync } from "@tldraw/sync";
 import "tldraw/tldraw.css";
 import { useParams } from "react-router-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faMicrophone } from "@fortawesome/free-solid-svg-icons";
+import { faMicrophone, faRobot } from "@fortawesome/free-solid-svg-icons";
 import {
   collection,
   doc,
@@ -405,6 +405,103 @@ const CollaborativeWhiteboard = () => {
     [recordOnce, uploadToFirebase]
   );
 
+  const openChatForShape = useCallback((shapeId) => {
+    console.log("[Chat] openChatForShape ->", shapeId);
+    setSelectedTargets([shapeId]);
+    setSelectedShape(editorInstance.current?.getShape?.(shapeId) ?? null);
+    // setIsSidebarOpen(true); // force open (no toggle)
+    // Optional: nudge ChatBot via externalMessages if it listens to these
+    setExternalMessages(() => [{ type: "Ask AI", targets: [shapeId] }]);
+  }, []);
+
+  const HoverActionBadge = ({ onIconClick }) => {
+    const editor = useEditor();
+
+    // current hovered shape
+    const hoveredId = useValue(
+      "hovered shape id",
+      () => editor.getHoveredShapeId?.() ?? null,
+      [editor]
+    );
+
+    // debounce so it doesn't flicker when you sweep across shapes
+    const [visibleId, setVisibleId] = useState(null);
+    useEffect(() => {
+      const t = setTimeout(() => setVisibleId(hoveredId), hoveredId ? 120 : 0);
+      return () => clearTimeout(t);
+    }, [hoveredId]);
+
+    //hide during panning, dragging, editing
+    const isBusy =
+      editor?.inputs?.isDragging ||
+      editor?.inputs?.isPanning ||
+      Boolean(editor?.getEditingShapeId?.());
+
+    if (!visibleId || isBusy) return null;
+
+    const isSelected = editor.getSelectedShapeIds().includes(visibleId);
+    if (isSelected) return null;
+
+    const pageBounds =
+      editor.getShapePageBounds?.(visibleId) ??
+      editor.getPageBounds?.(visibleId) ??
+      null;
+    if (!pageBounds) return null;
+
+    const rightCenterPage = {
+      x: pageBounds.maxX - 20,
+      // x: (pageBounds.minX + pageBounds.maxX) / 3,
+      // y: (pageBounds.minY + pageBounds.maxY) / 2,
+      y: pageBounds.minY,
+    };
+
+    const rightCenterScreen =
+      editor.pageToScreen?.(rightCenterPage) ?? rightCenterPage;
+    const zoom = editor.getZoomLevel?.() ?? 1;
+
+    const left = rightCenterScreen.x + 12;
+    const top = rightCenterScreen.y;
+
+    return (
+      <div
+        style={{
+          position: "fixed",
+          left,
+          top,
+          // transform: `translate(-50%, -50%) scale(${zoom})`,
+          pointerEvents: "none",
+          // zIndex: 1,
+        }}
+      >
+        <button
+          className="tlui-button tlui-button--icon"
+          onClick={(e) => {
+            e.stopPropagation();
+            // focus the shape, then trigger your UX
+            editor.setSelectedShapes?.([visibleId]);
+            onIconClick?.(visibleId);
+          }}
+          style={{
+            pointerEvents: "auto",
+            width: 120,
+            height: 38,
+            borderRadius: 5,
+            background: "white",
+            boxShadow: "0 6px 16px rgba(0,0,0,.2)",
+            display: "grid",
+            placeItems: "center",
+            opacity: 0.8,
+          }}
+          title="Quick actions"
+        >
+          <span>
+            <FontAwesomeIcon icon={faRobot} style={{ fontSize: 14 }} /> Ask AI
+          </span>
+        </button>
+      </div>
+    );
+  };
+
   const tldrawComponents = useMemo(
     () => ({
       ContextMenu: (props) => {
@@ -451,6 +548,16 @@ const CollaborativeWhiteboard = () => {
             setActionHistory={setActionHistory}
             fetchActionHistory={fetchActionHistory}
           />
+          <HoverActionBadge
+            // onIconClick={(shapeId) => {
+            //   setSelectedTargets([shapeId]);
+            //   setSelectedShape(
+            //     editorInstance.current?.getShape?.(shapeId) ?? null
+            //   );
+            //   toggleSidebar();
+            // }}
+            onIconClick={openChatForShape}
+          />
         </>
       ),
       // InFrontOfTheCanvas: (props) => {
@@ -489,12 +596,6 @@ const CollaborativeWhiteboard = () => {
         const tools = useTools();
         const micTool = tools["microphone"];
         const isMicSelected = useIsToolSelected(tools["microphone"]);
-
-        // console.log("[Toolbar] tools keys:", Object.keys(tools || {}));
-        // console.log(
-        //   "[Toolbar] microphone exists:",
-        //   Boolean(tools["microphone"])
-        // );
         return (
           <DefaultToolbar {...props}>
             <button
@@ -527,6 +628,7 @@ const CollaborativeWhiteboard = () => {
       addComment,
       setActionHistory,
       fetchActionHistory,
+      toggleSidebar,
     ]
   );
 
