@@ -24,7 +24,12 @@ import { useSync } from "@tldraw/sync";
 import "tldraw/tldraw.css";
 import { useParams } from "react-router-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faMicrophone, faRobot } from "@fortawesome/free-solid-svg-icons";
+import {
+  faMicrophone,
+  faRobot,
+  faCircle,
+  faCircleStop,
+} from "@fortawesome/free-solid-svg-icons";
 import {
   collection,
   doc,
@@ -46,6 +51,7 @@ import { AudioShapeUtil } from "../shapes/AudioShapeUtil";
 import { MicrophoneTool } from "../tools/MicrophoneTool";
 import CustomActionsMenu from "./CustomActionsMenu";
 import { upsertImageUrl } from "../utils/registershapes";
+import { recordOnce, createToggleRecorder } from "../utils/audioRecorder";
 
 const CUSTOM_TOOLS = [MicrophoneTool];
 const SHAPE_UTILS = [...defaultShapeUtils, AudioShapeUtil];
@@ -65,7 +71,15 @@ const CollaborativeWhiteboard = () => {
   const editorInstance = useRef(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [messages, setMessages] = useState([]);
+
+  const recorderRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const mediaSteamRef = useRef(null);
+  const autoStopTimeoutRef = useRef(null);
+  const audioChunksRef = useRef([]);
   const [isRecording, setIsRecording] = useState(false);
+  const [recordingStartAt, setRecordingStartAt] = useState(null);
+  const [elapsed, setElapsed] = useState("0:00");
 
   const roomId = useMemo(
     () =>
@@ -157,6 +171,29 @@ const CollaborativeWhiteboard = () => {
     }
   };
 
+  useEffect(() => {
+    if (!isRecording || !recordingStartAt) {
+      setElapsed("0:00");
+      return;
+    }
+
+    const id = setInterval(() => {
+      const ms = Date.now() - recordingStartAt;
+      const total = Math.floor(ms / 1000);
+      const mm = Math.floor(total / 60);
+      const ss = total % 60;
+      setElapsed(`${mm}:${ss.toString().padStart(2, "0")}`);
+    }, 200);
+    return () => clearInterval(id);
+  }, [isRecording, recordingStartAt]);
+
+  const formatMs = (ms) => {
+    const total = Math.floor(ms / 1000);
+    const mm = Math.floor(total / 60);
+    const ss = (total % 60).toString().padStart(2, "0");
+    return `${mm}:${ss}`;
+  };
+
   const components = {
     Navbar: Navbar,
     ContextMenu: CustomContextMenu,
@@ -217,91 +254,6 @@ const CollaborativeWhiteboard = () => {
     }
   }, [className, projectName, teamName]);
 
-  const recordOnce = useCallback((maxDurationMs = 10000) => {
-    return new Promise(async (resolve, reject) => {
-      let stream = null;
-      let mediaRecorder = null;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            sampleRate: 44100,
-          },
-        });
-
-        let mimeType = "audio/webm";
-        if (!MediaRecorder.isTypeSupported("audio/webm")) {
-          if (MediaRecorder.isTypeSupported("audio/mp4")) {
-            mimeType = "audio/mp4";
-          } else if (MediaRecorder.isTypeSupported("audio/ogg")) {
-            mimeType = "audio/ogg";
-          } else {
-            mimeType = "";
-          }
-        }
-
-        mediaRecorder = new MediaRecorder(stream, {
-          mimeType: mimeType || undefined,
-        });
-
-        const audioChunks = [];
-
-        mediaRecorder.addEventListener("dataavailable", (event) => {
-          if (event.data.size > 0) {
-            audioChunks.push(event.data);
-          }
-        });
-
-        mediaRecorder.addEventListener("stop", () => {
-          if (stream) {
-            stream.getTracks().forEach((track) => track.stop());
-          }
-
-          const audioBlob = new Blob(audioChunks, {
-            type: mimeType || "audio/webm",
-          });
-
-          console.log(
-            "Recording stopped, blob created:",
-            audioBlob.size,
-            "bytes"
-          );
-          resolve(audioBlob);
-        });
-
-        mediaRecorder.addEventListener("error", (event) => {
-          console.error("MediaRecorder error:", event.error);
-          cleanup();
-          reject(new Error(`Recording error: ${event.error.message}`));
-        });
-
-        mediaRecorder.start(1000);
-        console.log("Recording started...");
-
-        const timeoutId = setTimeout(() => {
-          if (mediaRecorder && mediaRecorder.state === "recording") {
-            console.log("Auto-stopping recording after", maxDurationMs, "ms");
-            mediaRecorder.stop();
-          }
-        }, maxDurationMs);
-
-        const cleanup = () => {
-          clearTimeout(timeoutId);
-          if (stream) {
-            stream.getTracks().forEach((track) => track.stop());
-          }
-        };
-      } catch (error) {
-        console.error("Failed to start recording:", error);
-        if (stream) {
-          stream.getTracks().forEach((track) => track.stop());
-        }
-        reject(error);
-      }
-    });
-  }, []);
-
   const uploadToFirebase = useCallback(async (blob) => {
     try {
       const currentUser = auth.currentUser;
@@ -338,6 +290,60 @@ const CollaborativeWhiteboard = () => {
     }
   }, []);
 
+  const startRecording = useCallback(async () => {
+    recorderRef.current = await createToggleRecorder({
+      maxDurationMs: 30000,
+      onElapsed: (ms) => {
+        const total = Math.floor(ms / 1000);
+        const mm = Math.floor(total / 60);
+        const ss = (total % 60).toString().padStart(2, "0");
+        setElapsed(`${mm}:${ss}`);
+      },
+    });
+    setIsRecording(true);
+    setRecordingStartAt(Date.now());
+    await recorderRef.current.start();
+  }, []);
+
+  const stopRecording = useCallback(
+    async (editor) => {
+      try {
+        const blob = await recorderRef.current.stop();
+        setIsRecording(false);
+        setRecordingStartAt(null);
+        setElapsed("0:00");
+
+        const url = await uploadToFirebase(blob);
+        // const { x, y } = editor.getViewportScreenCenter();
+        const bounds = editor.getViewportPageBounds();
+        const x = (bounds.minX + bounds.maxX) / 2;
+        const y = (bounds.minY + bounds.maxY) / 2;
+        editor.createShape({
+          type: "audio",
+          x,
+          y,
+          props: {
+            w: 420,
+            h: 39,
+            src: url,
+            title: "",
+            isPlaying: false,
+            currentTime: 0,
+            duration: 0,
+          },
+        });
+      } catch (e) {
+        setIsRecording(false);
+        setRecordingStartAt(null);
+        setElapsed("0:00");
+        alert("Recording failed: " + (e?.message || e));
+      } finally {
+        recorderRef.current = null;
+      }
+    },
+    [uploadToFirebase]
+  );
+
   const uiOverrides = useMemo(
     () => ({
       tools(editor, tools) {
@@ -346,63 +352,20 @@ const CollaborativeWhiteboard = () => {
           label: "Record",
           kbd: "r",
           readonlyOk: false,
+
           onSelect: async () => {
-            try {
-              console.log("Starting audio recording...");
-              setIsRecording(true);
-
-              const originalLabel = tools.microphone.label;
-              tools.microphone.label = "Recording...";
-
-              const blob = await recordOnce(5000);
-              tools.microphone.label = originalLabel;
-
-              console.log("Recording completed, blobr size:", blob.size);
-              setIsRecording(false);
-              const url = await uploadToFirebase(blob);
-              console.log("Audio uploaded, URL:", url);
-
-              const { x, y } = editor.getViewportScreenCenter();
-              const timestamp = Date.now();
-              editor.createShape({
-                type: "audio",
-                x,
-                y,
-                props: {
-                  w: 420,
-                  h: 39,
-                  src: url,
-                  // title: `Recording ${new Date(
-                  //   timestamp
-                  // ).toLocaleTimeString()}`,
-                  title: "",
-                  isPlaying: false,
-                  currentTime: 0,
-                  duration: 0,
-                },
-              });
-            } catch (error) {
-              setIsRecording(false);
-
-              console.error("Mic record failed:", error);
-              if (error.name === "NotAllowedError") {
-                alert(
-                  "Microphone access denied. Please allow microphone permissions and try again."
-                );
-              } else if (error.name === "NotFoundError") {
-                alert(
-                  "No microphone found. Please connect a microphone and try again."
-                );
-              } else {
-                alert("Recording failed: " + error.message);
-              }
+            if (!isRecording) {
+              startRecording();
+            } else {
+              await stopRecording(editor);
             }
           },
         };
         return tools;
       },
     }),
-    [recordOnce, uploadToFirebase]
+    // [recordOnce, uploadToFirebase]
+    [isRecording, startRecording, stopRecording]
   );
 
   const openChatForShape = useCallback((shapeId) => {
@@ -548,51 +511,12 @@ const CollaborativeWhiteboard = () => {
             setActionHistory={setActionHistory}
             fetchActionHistory={fetchActionHistory}
           />
-          <HoverActionBadge
-            // onIconClick={(shapeId) => {
-            //   setSelectedTargets([shapeId]);
-            //   setSelectedShape(
-            //     editorInstance.current?.getShape?.(shapeId) ?? null
-            //   );
-            //   toggleSidebar();
-            // }}
-            onIconClick={openChatForShape}
-          />
+          <HoverActionBadge onIconClick={openChatForShape} />
         </>
       ),
-      // InFrontOfTheCanvas: (props) => {
-      //   const editor = useEditor();
-      //   const selectedIds = useValue(
-      //     "selected ids",
-      //     () => editor.getSelectedShapeIds(),
-      //     [editor]
-      //   );
-
-      //   useEffect(() => {
-      //     // IDs of everything the user has selected (single or marquee)
-      //     setSelectedTargets(selectedIds);
-      //     // Convenience: keep a single selected shape (or null)
-      //     const onlyOne =
-      //       selectedIds.length === 1 ? editor.getShape(selectedIds[0]) : null;
-      //     setSelectedShape(onlyOne);
-      //   }, [selectedIds, editor]);
-
-      //   return (
-      //     <ContextToolbarComponent
-      //       {...props}
-      //       userRole={userRole}
-      //       selectedShape={selectedShape}
-      //       setShapeReactions={setShapeReactions}
-      //       shapeReactions={shapeReactions}
-      //       commentCounts={commentCounts}
-      //       addComment={addComment}
-      //       setActionHistory={setActionHistory}
-      //       fetchActionHistory={fetchActionHistory}
-      //     />
-      //   );
-      // },
 
       Toolbar: (props) => {
+        const editor = useEditor();
         const tools = useTools();
         const micTool = tools["microphone"];
         const isMicSelected = useIsToolSelected(tools["microphone"]);
@@ -600,16 +524,54 @@ const CollaborativeWhiteboard = () => {
           <DefaultToolbar {...props}>
             <button
               type="button"
-              onClick={() => micTool?.onSelect?.()}
+              // onClick={() => micTool?.onSelect?.()}
               className="tlui-button tlui-button--icon"
               aria-pressed={isMicSelected}
-              title="Record"
+              // title="Record"
+              title={
+                isRecording
+                  ? `Stop recording • ${elapsed} / ${formatMs(
+                      30000
+                    )} (auto-stops at ${formatMs(30000)})`
+                  : `Record (auto-stops at ${formatMs(30000)})`
+              }
               style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+              // disabled={isRecording}
+              onClick={async () => {
+                if (!isRecording) {
+                  startRecording();
+                } else {
+                  await stopRecording(editor);
+                }
+              }}
             >
-              <FontAwesomeIcon
+              {/* <FontAwesomeIcon
                 icon={faMicrophone}
                 style={{ color: isRecording ? "red" : "black", fontSize: 16 }}
-              />
+              /> */}
+              {isRecording ? (
+                <>
+                  <FontAwesomeIcon
+                    icon={faCircleStop}
+                    style={{ color: "red", fontSize: 14 }}
+                  />
+                  <span
+                    style={{
+                      fontFamily: "monospace",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {elapsed}/{formatMs(30000)}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <FontAwesomeIcon
+                    icon={faMicrophone}
+                    style={{ fontSize: 16 }}
+                  />
+                </>
+              )}
             </button>
             <DefaultToolbarContent />
           </DefaultToolbar>
@@ -629,6 +591,8 @@ const CollaborativeWhiteboard = () => {
       setActionHistory,
       fetchActionHistory,
       toggleSidebar,
+      isRecording,
+      elapsed,
     ]
   );
 
