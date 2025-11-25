@@ -1,33 +1,20 @@
 import React, { useState, useEffect } from "react";
-// import { initializeApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
-import { getFirestore, doc, getDoc } from "firebase/firestore";
+import { signInWithPopup, signInWithEmailAndPassword } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
-import { useFlashMessage } from "../FlashMessageContext"; // Import the flash message hook
+import { useFlashMessage } from "../FlashMessageContext";
 import "bootstrap/dist/css/bootstrap.min.css";
 import "bootstrap-icons/font/bootstrap-icons.css";
-// import firebaseConfig from "../firebaseConfig";
-import { app, db, auth, googleProvider, storage } from "../firebaseConfig";
-import {
-  sendSignInLinkToEmail,
-  isSignInWithEmailLink,
-  signInWithEmailLink,
-} from "firebase/auth";
-
-// Firebase configuration
-
-// Initialize Firebase
-// const app = initializeApp(firebaseConfig);
-// const auth = getAuth(app);
-// const provider = new GoogleAuthProvider();
-// const db = getFirestore(app);
+import { db, auth, googleProvider } from "../firebaseConfig";
 
 const LoginPage = () => {
-  const [message, setMessage] = useState(null);
-  const navigate = useNavigate();
-  const addMessage = useFlashMessage(); // Get the flash message function from context
+  const [message, setMessage] = useState(null); // optional local messages
   const [email, setEmail] = useState("");
-  // Add 'login-page' class to the body when the component mounts
+  const [password, setPassword] = useState("");
+  const [showEmailForm, setShowEmailForm] = useState(false); // NEW
+  const navigate = useNavigate();
+  const addMessage = useFlashMessage();
+
   useEffect(() => {
     document.body.classList.add("login-page");
     return () => {
@@ -35,75 +22,88 @@ const LoginPage = () => {
     };
   }, []);
 
-  const handleEmailSignIn = async () => {
-    if (!email.endsWith("@lsu.edu")) {
-      addMessage("danger", "Only LSU email addresses are allowed.");
+  const handleProfileAndRedirect = async (user) => {
+    const userEmail = user.email;
+    const userName = user.displayName || userEmail;
+    const photoURL = user.photoURL || "";
+
+    // OPTIONAL: enforce LSU domain at auth level
+    if (!userEmail.toLowerCase().endsWith("@lsu.edu")) {
+      addMessage(
+        "danger",
+        "Only LSU email accounts are allowed. Please use your LSU email."
+      );
+      await auth.signOut();
       return;
     }
 
-    const actionCodeSettings = {
-      url: "https://colla-board.vercel.app//finishSignIn", // Adjust for deployed domain later
-      handleCodeInApp: true,
-    };
+    // Fetch profile from Firestore
+    const userDocRef = doc(db, "users", userEmail);
+    const userDoc = await getDoc(userDocRef);
 
-    try {
-      await sendSignInLinkToEmail(auth, email, actionCodeSettings);
-      window.localStorage.setItem("emailForSignIn", email);
-      addMessage("info", "Sign-in link sent. Check your LSU email.");
-    } catch (error) {
-      console.error("Email sign-in failed:", error);
-      addMessage("danger", "Could not send sign-in link. Please try again.");
+    if (!userDoc.exists()) {
+      addMessage(
+        "danger",
+        "Your account is not registered in the system. Please contact the instructor."
+      );
+      await auth.signOut();
+      return;
     }
+
+    const userData = userDoc.data();
+    const role = userData.role;
+    const LSUID = userData.lsuID || null;
+
+    // Store profile locally
+    localStorage.setItem("role", role);
+    localStorage.setItem("userEmail", userEmail);
+    if (photoURL) localStorage.setItem("photoURL", photoURL);
+    if (LSUID) localStorage.setItem("LSUID", LSUID);
+
+    console.log("Signed in with Firestore profile:", {
+      userEmail,
+      role,
+      LSUID,
+    });
+
+    addMessage("success", `Welcome, ${userName}!`);
+    navigate(role === "teacher" ? "/teachers-home" : "/students-home");
   };
 
   const googleLogin = async () => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
-      const user = result.user;
-      const userEmail = user.email;
-      const userName = user.displayName;
-      const photoURL = user.photoURL;
-
-      // Fetch role & LSUID from Firestore
-      const userDoc = await getDoc(doc(db, "users", userEmail));
-      if (!userDoc.exists()) {
-        // Use flash message to alert user not found
-        addMessage("danger", "User not found in the database.");
-        return;
-      }
-
-      const userData = userDoc.data();
-      const role = userData.role;
-      const LSUID = userData.lsuID || null; // Ensure LSUID is retrieved
-
-      // Store user data in localStorage
-      localStorage.setItem("role", role);
-      localStorage.setItem("userEmail", userEmail);
-      localStorage.setItem("photoURL", photoURL);
-      if (LSUID) {
-        localStorage.setItem("LSUID", LSUID);
-      }
-
-      // Debugging Logs
-      console.log("User Email:", userEmail);
-      console.log("User Role:", role);
-      console.log("LSUID:", LSUID);
-
-      // Show welcome flash message in the top right corner
-      addMessage("success", `Welcome, ${userName}!`);
-
-      // Navigate based on role
-      navigate(role === "teacher" ? "/teachers-home" : "/students-home");
+      await handleProfileAndRedirect(result.user);
     } catch (error) {
       console.error("Google login failed:", error);
       addMessage("danger", "Google login failed. Please try again.");
     }
   };
 
+  const emailPasswordLogin = async (e) => {
+    e.preventDefault();
+    try {
+      const result = await signInWithEmailAndPassword(auth, email, password);
+      await handleProfileAndRedirect(result.user);
+    } catch (error) {
+      console.error("Email/password login failed:", error);
+
+      let msg = "Login failed. Please check your email and password.";
+      if (error.code === "auth/user-not-found") {
+        msg = "No account found for this email.";
+      } else if (error.code === "auth/wrong-password") {
+        msg = "Incorrect password. Please try again.";
+      } else if (error.code === "auth/invalid-email") {
+        msg = "Please enter a valid email address.";
+      }
+
+      addMessage("danger", msg);
+    }
+  };
+
   return (
     <div
       className="d-flex justify-content-center align-items-center min-vh-100"
-      // style={{ backgroundColor: "#f0f0f0" }}
       style={{
         backgroundImage: 'url("/body-bg3.png")',
         backgroundSize: "cover",
@@ -123,11 +123,9 @@ const LoginPage = () => {
           style={{ width: "150px", marginBottom: "20px" }}
         />
 
-        {/* <h2 className="text-center mb-4">PolyFlux</h2> */}
-
         <p className="mb-4 text-muted">Collaborate. Create. Reflect.</p>
 
-        {/* Local flash messages (if any) */}
+        {/* Local flash messages (if you still use `message` state here) */}
         {message && (
           <div
             className={`alert ${
@@ -139,8 +137,8 @@ const LoginPage = () => {
           </div>
         )}
 
+        {/* Google login */}
         <div className="mb-3">
-          {/* Google Login Button - Centered */}
           <div className="d-flex justify-content-center">
             <button className="googlebutton" onClick={googleLogin}>
               <svg
@@ -168,24 +166,60 @@ const LoginPage = () => {
               Login with Google
             </button>
           </div>
-
-          <div className="mt-4">
-            <input
-              className="form-control mb-2"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Enter your LSU email"
-            />
-            {/* <button onClick={handleEmailSignIn}>Send Sign-In Link</button> */}
-            <button
-              className="btn btn-primary w-100"
-              onClick={handleEmailSignIn}
-            >
-              Send Sign-In Link
-            </button>
-          </div>
         </div>
+
+        {/* Small link to reveal email/password form */}
+        {!showEmailForm && (
+          <button
+            type="button"
+            className="btn btn-link mt-2 p-0"
+            onClick={() => setShowEmailForm(true)}
+          >
+            Sign in with email instead
+          </button>
+        )}
+
+        {/* Email/password login: only visible after clicking the link */}
+        {showEmailForm && (
+          <>
+            {/* Divider */}
+            <div className="d-flex align-items-center my-3">
+              <hr className="flex-grow-1" />
+              <span className="mx-2 text-muted">OR</span>
+              <hr className="flex-grow-1" />
+            </div>
+
+            <form onSubmit={emailPasswordLogin}>
+              <div className="mb-2 text-start">
+                <label className="form-label mb-1">Email</label>
+                <input
+                  type="email"
+                  className="form-control"
+                  placeholder="yourname@lsu.edu"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="mb-3 text-start">
+                <label className="form-label mb-1">Password</label>
+                <input
+                  type="password"
+                  className="form-control"
+                  placeholder="Enter your password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+              </div>
+
+              <button type="submit" className="btn btn-primary w-100">
+                Login with Email
+              </button>
+            </form>
+          </>
+        )}
       </div>
     </div>
   );
