@@ -23,7 +23,7 @@ body {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   font-family: Arial, sans-serif;
   color: #333;
-  padding: 20px;
+  padding: 10px;
   padding-bottom: 35px;
 }
 
@@ -570,10 +570,10 @@ body {
   justify-content: flex-start;
   align-items: flex-start;
 }
-.student-dashboard-container {
+/* .student-dashboard-container {
   margin: 0 !important;
   padding: 0;
-}
+} */
 
 /* --------Team Pages---------- */
 

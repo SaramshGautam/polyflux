@@ -13,10 +13,10 @@
   right: 0;
   height: 60px; /* Adjust navbar height */
 }
-/* Add this to your main content or container class to avoid overlap */
-body {
-  padding-top: 60px; /* Adjust this value to the height of your navbar */
-}
+
+/* body {
+  padding-top: 60px; 
+} */
 
 /* Or if you're using a wrapper div */
 .content-wrapper {
@@ -112,13 +112,12 @@ body {
 }
 
 .dropdown-menu {
-  background-color: rgb(52,58,64,255);/* Slate Blue */
+  background-color: rgb(52, 58, 64, 255); /* Slate Blue */
 }
 
 .dropdown-menu .dropdown-item:hover {
-  background-color: rgb(52,58,64,255); /* Darker Slate Blue */
+  background-color: rgb(52, 58, 64, 255); /* Darker Slate Blue */
 }
-
 
 /* Use the btn-dark for the logout button */
 .dropdown-menu .btn-sm {

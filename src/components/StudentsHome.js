@@ -1,10 +1,20 @@
-import React, { useState, useEffect } from 'react';
-import { getFirestore, collection, getDocs, getDoc, doc } from 'firebase/firestore';
-import { useNavigate } from 'react-router-dom';
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import React, { useState, useEffect } from "react";
+import {
+  getFirestore,
+  collection,
+  getDocs,
+  getDoc,
+  doc,
+} from "firebase/firestore";
+import { useNavigate } from "react-router-dom";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
+import "./StudentHome.css";
 
 const StudentHome = () => {
-  const [classrooms, setClassrooms] = useState({ groupedClassrooms: {}, sortedSemesters: [] });
+  const [classrooms, setClassrooms] = useState({
+    groupedClassrooms: {},
+    sortedSemesters: [],
+  });
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState(null);
   const navigate = useNavigate();
@@ -24,15 +34,15 @@ const StudentHome = () => {
     return () => unsubscribe();
   }, [auth]);
 
-  // Updated sorting logic: 
+  // Updated sorting logic:
   // - Valid semesters (e.g., "Fall 2025") are sorted by year (descending) first.
   // - For the same year, order is: Fall (1), Summer (2), Spring (3).
   // - Any missing/invalid semester (e.g., undefined) is pushed to the end.
   const sortSemesters = (semesters) => {
     const semesterOrder = {
-      "Fall": 1,
-      "Summer": 2,
-      "Spring": 3,
+      Fall: 1,
+      Summer: 2,
+      Spring: 3,
     };
 
     return semesters.sort((a, b) => {
@@ -74,13 +84,16 @@ const StudentHome = () => {
       try {
         setLoading(true);
         const db = getFirestore();
-        const classroomsRef = collection(db, 'classrooms');
+        const classroomsRef = collection(db, "classrooms");
         const querySnapshot = await getDocs(classroomsRef);
 
         const studentClassrooms = [];
         for (const docSnapshot of querySnapshot.docs) {
           const classroom = docSnapshot.data();
-          const studentsRef = collection(db, `classrooms/${docSnapshot.id}/students`);
+          const studentsRef = collection(
+            db,
+            `classrooms/${docSnapshot.id}/students`
+          );
           const studentsSnapshot = await getDocs(studentsRef);
 
           // Check if the student exists in the classroom's students subcollection
@@ -90,12 +103,16 @@ const StudentHome = () => {
 
           if (isStudentInClassroom) {
             // Fetch teacher's name using the teacher's email
-            const teacherDoc = await getDoc(doc(db, 'users', classroom.teacherEmail));
-            const teacherName = teacherDoc.exists() ? teacherDoc.data().name : 'Unknown';
+            const teacherDoc = await getDoc(
+              doc(db, "users", classroom.teacherEmail)
+            );
+            const teacherName = teacherDoc.exists()
+              ? teacherDoc.data().name
+              : "Unknown";
 
             studentClassrooms.push({
               id: docSnapshot.id,
-              teacherName,  // Add teacher's name here
+              teacherName, // Add teacher's name here
               ...classroom,
             });
           }
@@ -117,7 +134,7 @@ const StudentHome = () => {
 
         setClassrooms({ groupedClassrooms, sortedSemesters });
       } catch (error) {
-        console.error('Error fetching classrooms:', error);
+        console.error("Error fetching classrooms:", error);
       } finally {
         setLoading(false);
       }
@@ -138,7 +155,7 @@ const StudentHome = () => {
               <i className="bi bi-person-badge"></i> Student's Dashboard
             </h1>
           </div>
-  
+
           {/* Classrooms organized by semester */}
           <div className="assigned-classrooms">
             {classrooms.sortedSemesters.length > 0 ? (
