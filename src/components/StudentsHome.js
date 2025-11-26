@@ -176,6 +176,9 @@ const StudentHome = () => {
                             <p className="card-text">
                               Instructor: {classroom.teacherName}
                             </p>
+                            <p className="card-hint text-muted">
+                              click to open class →
+                            </p>
                           </div>
                         </div>
                       </div>

@@ -48,10 +48,10 @@ const Navbar = () => {
         <div className="navbar-title" onClick={() => navigate(homeRoute)}>
           PolyFlux
         </div>
-        <div className="navbar-links">
+        {/* <div className="navbar-links">
           <a href="#about">About</a>
           <a href="#contact">Contact</a>
-        </div>
+        </div> */}
       </div>
       <div className="navbar-right">
         {/* Dropdown for logout */}

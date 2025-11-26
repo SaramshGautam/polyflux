@@ -8,7 +8,7 @@
   min-height: calc(100vh - var(--navbar-height));
   margin: 0 auto;
   padding-bottom: 3rem;
-  padding-top: 60px;
+  padding-top: var(--navbar-height); /* keeps content below navbar */
 }
 
 /* Title */
@@ -77,6 +77,7 @@
   display: flex;
   flex-direction: column;
   justify-content: space-between;
+  text-align: left;
 }
 
 /* Course title */
@@ -103,6 +104,20 @@
   background: #f3f2ff;
   color: #5a52d5;
   margin-top: 0.4rem;
+}
+
+/* Hint text at bottom of card */
+.card-hint {
+  font-size: 0.78rem;
+  margin-top: auto;
+  opacity: 0.65;
+  letter-spacing: 0.3px;
+  align-self: flex-start; /* left in flex world */
+  text-align: left;
+}
+
+.classroom-card:hover .card-hint {
+  opacity: 0.9;
 }
 
 /* Empty state */

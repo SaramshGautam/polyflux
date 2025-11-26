@@ -7,6 +7,9 @@ import {
   getDoc,
   collection,
   getDocs,
+  orderBy,
+  query,
+  limit,
 } from "firebase/firestore";
 import "./Project.css";
 
@@ -73,15 +76,118 @@ const Project = () => {
         );
         const teamsSnapshot = await getDocs(teamsRef);
 
-        const teamsData = [];
-        teamsSnapshot.forEach((teamDoc) => {
-          const teamData = teamDoc.data();
-          const teamMembers = Object.keys(teamData);
-          teamsData.push({
-            name: teamDoc.id,
-            members: teamMembers,
-          });
-        });
+        // const teamsData = [];
+        // teamsSnapshot.forEach((teamDoc) => {
+        //   const teamData = teamDoc.data();
+        //   const teamMembers = Object.keys(teamData);
+        //   teamsData.push({
+        //     name: teamDoc.id,
+        //     members: teamMembers,
+        //   });
+        // });
+
+        // const teamsData = await Promise.all(
+        //   teamsSnapshot.docs.map(async (teamDoc) => {
+        //     const teamData = teamDoc.data();
+        //     // const teamMembers = Object.keys(teamData);
+        //     const teamMembers = Object.keys(teamData).filter(
+        //       (key) => key !== "previewUrl"
+        //     );
+        //     const previewUrl = teamData.previewUrl || null;
+
+        //     // Presence subcollection: classrooms/{className}/Projects/{projectName}/teams/{teamName}/presence
+        //     const presenceRef = collection(
+        //       db,
+        //       "classrooms",
+        //       className,
+        //       "Projects",
+        //       projectName,
+        //       "teams",
+        //       teamDoc.id,
+        //       "presence"
+        //     );
+
+        //     let latestPresence = null;
+        //     try {
+        //       const presQuery = query(
+        //         presenceRef,
+        //         orderBy("lastActive", "desc"),
+        //         limit(1)
+        //       );
+        //       const presSnap = await getDocs(presQuery);
+        //       if (!presSnap.empty) {
+        //         const data = presSnap.docs[0].data();
+        //         latestPresence = {
+        //           displayName: data.displayName || "Someone",
+        //           photoURL: data.photoURL || null,
+        //           lastActive: data.lastActive?.toDate
+        //             ? data.lastActive.toDate()
+        //             : null,
+        //         };
+        //       }
+        //     } catch (e) {
+        //       console.warn("Error fetching presence for team", teamDoc.id, e);
+        //     }
+
+        //     return {
+        //       name: teamDoc.id,
+        //       members: teamMembers,
+        //       latestPresence,
+        //     };
+        //   })
+        // );
+
+        const teamsData = await Promise.all(
+          teamsSnapshot.docs.map(async (teamDoc) => {
+            const teamData = teamDoc.data();
+
+            const teamMembers = Object.keys(teamData).filter(
+              (key) => key !== "previewUrl"
+            );
+            const previewUrl = teamData.previewUrl || null;
+
+            // presence fetching stays the same
+            const presenceRef = collection(
+              db,
+              "classrooms",
+              className,
+              "Projects",
+              projectName,
+              "teams",
+              teamDoc.id,
+              "presence"
+            );
+
+            let latestPresence = null;
+            try {
+              const presQuery = query(
+                presenceRef,
+                orderBy("lastActive", "desc"),
+                limit(1)
+              );
+              const presSnap = await getDocs(presQuery);
+              if (!presSnap.empty) {
+                const data = presSnap.docs[0].data();
+                latestPresence = {
+                  displayName: data.displayName || "Someone",
+                  photoURL: data.photoURL || null,
+                  lastActive: data.lastActive?.toDate
+                    ? data.lastActive.toDate()
+                    : null,
+                };
+              }
+            } catch (e) {
+              console.warn("Error fetching presence for team", teamDoc.id, e);
+            }
+
+            return {
+              name: teamDoc.id,
+              members: teamMembers,
+              latestPresence,
+              previewUrl,
+            };
+          })
+        );
 
         setTeams(teamsData);
 
@@ -194,34 +300,69 @@ const Project = () => {
           <div className="teams-list">
             {role === "student" ? (
               studentTeamAssigned ? (
-                <div
-                  className={`card team-card ${
-                    role === "student" ? "student" : ""
-                  }`}
-                >
-                  <div className="card-body">
-                    <h5 className="card-title">
-                      <i className="bi bi-people-fill me-2"></i>{" "}
-                      {studentTeamAssigned}
-                    </h5>
-                    <div className="d-flex justify-content-around">
-                      <Link
-                        to={`/classroom/${className}/project/${projectName}/team/${studentTeamAssigned}`}
-                        className="btn btn-view"
-                      >
-                        View Team
-                      </Link>
-                      <button
-                        className="btn btn-whiteboard"
-                        onClick={() =>
-                          handleWhiteboardClick(studentTeamAssigned)
-                        }
-                      >
-                        <i className="bi bi-tv"></i> Whiteboard
-                      </button>
+                (() => {
+                  const assignedTeam = teams.find(
+                    (t) => t.name === studentTeamAssigned
+                  );
+
+                  const localPreviewUrl = assignedTeam
+                    ? localStorage.getItem(
+                        `preview-${className}-${projectName}-${assignedTeam.name}`
+                      )
+                    : null;
+
+                  const imgSrc =
+                    assignedTeam?.previewUrl ||
+                    localPreviewUrl ||
+                    defaultTeamPreview;
+
+                  return (
+                    <div
+                      className={`card team-card ${
+                        role === "student" ? "student" : ""
+                      }`}
+                    >
+                      <div className="whiteboard-preview">
+                        <img
+                          src={imgSrc}
+                          alt={`${studentTeamAssigned}-preview`}
+                          onError={(e) => {
+                            e.target.onerror = null;
+                            e.target.src = defaultTeamPreview;
+                          }}
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                            borderRadius: "10px 10px 0 0",
+                          }}
+                        />
+                      </div>
+                      <div className="card-body">
+                        <h5 className="card-title">
+                          <i className="bi bi-people-fill me-2"></i>{" "}
+                          {studentTeamAssigned}
+                        </h5>
+                        <div className="d-flex justify-content-around">
+                          <Link
+                            to={`/classroom/${className}/project/${projectName}/team/${studentTeamAssigned}`}
+                            className="btn btn-view"
+                          >
+                            View Team
+                          </Link>
+                          <button
+                            className="btn btn-whiteboard"
+                            onClick={() =>
+                              handleWhiteboardClick(studentTeamAssigned)
+                            }
+                          >
+                            <i className="bi bi-tv"></i> Whiteboard
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
+                  );
+                })()
               ) : (
                 <p className="text-muted">
                   You are not assigned to any team yet.
@@ -229,14 +370,17 @@ const Project = () => {
               )
             ) : (
               teams.map((team) => {
-                const previewUrl = localStorage.getItem(
+                const localPreviewUrl = localStorage.getItem(
                   `preview-${className}-${projectName}-${team.name}`
                 );
+                const imgSrc =
+                  localPreviewUrl || team.previewUrl || defaultTeamPreview;
+
                 return (
                   <div key={team.name} className="card team-card">
                     <div className="whiteboard-preview">
                       <img
-                        src={previewUrl || defaultTeamPreview}
+                        src={imgSrc}
                         alt={`${team.name}-preview`}
                         onError={(e) => {
                           e.target.onerror = null;
@@ -251,28 +395,34 @@ const Project = () => {
                       />
                     </div>
 
-                    {/* <div className="card-body">
-                    <h5 className="card-title">
-                      <i className="bi bi-people-fill me-2"></i> {team.name}
-                    </h5>
-                    <div className="d-flex justify-content-around card-footer">
-                      <Link
-                        to={`/classroom/${className}/project/${projectName}/team/${team.name}`}
-                        className="btn btn-view"
-                      >
-                        View Team
-                      </Link>
-                      <button
-                        className="btn btn-whiteboard"
-                        onClick={() => handleWhiteboardClick(team.name)}
-                      >
-                        <i className="bi bi-tv"></i> Whiteboard
-                      </button> */}
                     <div className="card-body">
-                      <h5 className="card-title">
-                        <i className="bi bi-people-fill me-2"></i> {team.name}
-                      </h5>
-                      {/* <div className="d-flex justify-content-around"> */}
+                      <div className="team-card-header">
+                        <h5 className="card-title">
+                          <i className="bi bi-people-fill me-2"></i> {team.name}
+                        </h5>
+
+                        {team.latestPresence && (
+                          <div
+                            className="team-avatar-block"
+                            title={`Last active: ${team.latestPresence.displayName}`}
+                          >
+                            {team.latestPresence.photoURL ? (
+                              <img
+                                src={team.latestPresence.photoURL}
+                                alt={team.latestPresence.displayName}
+                                className="team-avatar-image"
+                              />
+                            ) : (
+                              <div className="team-avatar-fallback">
+                                {team.latestPresence.displayName
+                                  .charAt(0)
+                                  .toUpperCase()}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
                       <div className="card-footer">
                         <Link
                           to={`/classroom/${className}/project/${projectName}/team/${team.name}`}
@@ -288,6 +438,7 @@ const Project = () => {
                         </button>
                       </div>
                     </div>
+
                     {/* </div> */}
                   </div>
                 );
