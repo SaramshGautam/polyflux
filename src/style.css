@@ -3,19 +3,19 @@ body {
   padding: 0 20px;
 }
 
-.classrooms-list {
+/* .classrooms-list {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-}
+} */
 
-.panelContainerWrapper {
+/* .panelContainerWrapper {
   position: fixed;
   right: 10px;
   z-index: 1000;
-}
+} */
 
-.panelContainer {
+/* .panelContainer {
   right: 10px;
   width: 250px;
   background-color: #fff;
@@ -25,7 +25,7 @@ body {
   color: #333;
   padding: 10px;
   padding-bottom: 35px;
-}
+} */
 
 /* .toggle-collapse-button,
 .toggle-expand-button {

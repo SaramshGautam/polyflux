@@ -23,9 +23,21 @@ export const AddCommentToShape = async (
     text: commentText,
   };
 
+  // const shapeRef = doc(
+  //   db,
+  //   `classrooms/${className}/Projects/${projectName}/teams/${teamName}/shapes/${shapeId}`
+  // );
+
   const shapeRef = doc(
     db,
-    `classrooms/${className}/Projects/${projectName}/teams/${teamName}/shapes/${shapeId}`
+    "classrooms",
+    className,
+    "Projects",
+    projectName,
+    "teams",
+    teamName,
+    "shapes",
+    shapeId
   );
 
   try {
@@ -41,9 +53,20 @@ export const AddCommentToShape = async (
 
 export const fetchCommentsForShape = async (shapeId, context) => {
   const { className, projectName, teamName } = context;
+  // const shapeRef = doc(
+  //   db,
+  //   `classrooms/${className}/Projects/${projectName}/teams/${teamName}/shapes/${shapeId}`
+  // );
   const shapeRef = doc(
     db,
-    `classrooms/${className}/Projects/${projectName}/teams/${teamName}/shapes/${shapeId}`
+    "classrooms",
+    className,
+    "Projects",
+    projectName,
+    "teams",
+    teamName,
+    "shapes",
+    shapeId
   );
   try {
     const shapeSnap = await getDoc(shapeRef);

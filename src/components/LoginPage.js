@@ -28,14 +28,14 @@ const LoginPage = () => {
     const photoURL = user.photoURL || "";
 
     // OPTIONAL: enforce LSU domain at auth level
-    if (!userEmail.toLowerCase().endsWith("@lsu.edu")) {
-      addMessage(
-        "danger",
-        "Only LSU email accounts are allowed. Please use your LSU email."
-      );
-      await auth.signOut();
-      return;
-    }
+    // if (!userEmail.toLowerCase().endsWith("@lsu.edu")) {
+    //   addMessage(
+    //     "danger",
+    //     "Only LSU email accounts are allowed. Please use your LSU email."
+    //   );
+    //   await auth.signOut();
+    //   return;
+    // }
 
     // Fetch profile from Firestore
     const userDocRef = doc(db, "users", userEmail);
