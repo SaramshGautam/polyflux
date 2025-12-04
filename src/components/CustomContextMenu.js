@@ -319,7 +319,7 @@ export default function CustomContextMenu({
       const deleted = { id: deletedShapeID.id, type: "shape" };
 
       const entry = makeHistoryEntry({
-        userId,
+        userId: userIdFromAuth,
         verb: "deleted",
         shape: deleted,
         editor,
@@ -405,7 +405,7 @@ export default function CustomContextMenu({
                 userId: userIdFromAuth,
               };
               // end if any
-              endSessionIfAny(leftShape, userContext, userId);
+              endSessionIfAny(leftShape, userContext, userIdFromAuth);
             }
           }
         }
