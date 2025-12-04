@@ -16,6 +16,7 @@
     "axios": "^1.7.9",
     "bootstrap": "^5.3.3",
     "bootstrap-icons": "^1.11.3",
+    "file-saver": "^2.0.5",
     "firebase": "^11.2.0",
     "jsmediatags-web": "^0.0.4",
     "react": "^18.3.1",
