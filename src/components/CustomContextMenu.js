@@ -772,6 +772,12 @@ export default function CustomContextMenu({
       );
 
       const result = await res.json();
+      if (!res.ok || data.error) {
+        console.error("Nudge analyze error:", data.error || res.statusText);
+        // Optionally show a soft error badge instead of crashing UI
+        return;
+      }
+
       console.log("Agents triggered successfully:", result);
 
       if (result?.nudges && result.nudges.length > 0) {

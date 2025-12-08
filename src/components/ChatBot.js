@@ -657,6 +657,9 @@ const ChatBot = ({
 
     try {
       const res = await fetch("http://192.168.1.185:8060/analyze", {
+        // const res = await fetch(
+        //   "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
+        //   {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -915,26 +918,27 @@ const ChatBot = ({
     setLoading(true);
 
     try {
-      const response = await fetch("http://127.0.0.1:5000/api/chatgpt-helper", {
-        // const response = await fetch(
-        //   "https://flask-app-jqwkqdscaq-uc.a.run.app/api/chatgpt-helper",
-        //   {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: userInput,
-          canvas_id: canvasId,
-          role,
-          user_id,
-          targets: targets || [],
-          params: params || {},
-          context: {
-            images: context.images,
-            texts: context.texts,
-          },
-          history,
-        }),
-      });
+      // const response = await fetch("http://127.0.0.1:5000/api/chatgpt-helper", {
+      const response = await fetch(
+        "https://flask-app-jqwkqdscaq-uc.a.run.app/api/chatgpt-helper",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: userInput,
+            canvas_id: canvasId,
+            role,
+            user_id,
+            targets: targets || [],
+            params: params || {},
+            context: {
+              images: context.images,
+              texts: context.texts,
+            },
+            history,
+          }),
+        }
+      );
 
       const data = await response.json();
       if (data.reply) {

@@ -6,7 +6,16 @@
   margin-top: 60px;
   position: relative;
   height: calc(100vh - 60px);
-  background-color: #b1b8ce; /* Light gray background */
+  /* Neutral */
+  background-color: #b1b8ce;
+  /* Peach-Orange - Divergent*/
+  /* background-color: #f2c894; */
+  /* Pale Cerulean - Convergent*/
+  /* background-color: #f2c894; */
+  /* Pastel Orange - Divergent */
+  /* background-color: #ffb347; */
+  /* Dark Pastel Blue - Convergent */
+  /* background-color: #779ecc; */
   padding: 10px;
 }
 

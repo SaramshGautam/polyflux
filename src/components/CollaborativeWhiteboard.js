@@ -502,14 +502,32 @@ const CollaborativeWhiteboard = () => {
     });
   }, []);
 
+  // useEffect(() => {
+  //   if (editorInstance) {
+  //     saveCanvasPreview();
+  //   }
+  //   return () => {
+  //     saveCanvasPreview();
+  //   };
+  // }, [store]);
+
   useEffect(() => {
-    if (editorInstance) {
-      saveCanvasPreview();
-    }
-    return () => {
+    if (!editorReady) return;
+    if (!className || !projectName || !teamName) return;
+
+    const handleBeforeUnload = (event) => {
+      // Fire and forget – we can't `await` here
       saveCanvasPreview();
     };
-  }, [store]);
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      // Component is unmounting (user navigated away from whiteboard route)
+      saveCanvasPreview();
+    };
+  }, [editorReady, className, projectName, teamName]);
 
   // const fetchActionHistory = async (userContext, setActionHistory) => {
   //   if (!userContext) return;
@@ -583,14 +601,14 @@ const CollaborativeWhiteboard = () => {
     return `${mm}:${ss}`;
   };
 
-  const components = {
-    Navbar: Navbar,
-    ContextMenu: CustomContextMenu,
-    InFrontOfTheCanvas: ContextToolbarComponent,
-    Toolbar: DefaultToolbar,
-    // Toolbar: CustomToolbar,
-    ActionsMenu: CustomActionsMenu,
-  };
+  // const components = {
+  //   Navbar: Navbar,
+  //   ContextMenu: CustomContextMenu,
+  //   InFrontOfTheCanvas: ContextToolbarComponent,
+  //   Toolbar: DefaultToolbar,
+  //   // Toolbar: CustomToolbar,
+  //   ActionsMenu: CustomActionsMenu,
+  // };
 
   const addComment = useCallback((shapeId, commentData) => {
     console.log("Adding comment for shapeId:", shapeId);
@@ -774,6 +792,44 @@ const CollaborativeWhiteboard = () => {
     [uploadToFirebase]
   );
 
+  // const uiOverrides = useMemo(
+  //   () => ({
+  //     tools(editor, tools) {
+  //       tools.microphone = {
+  //         id: "microphone",
+  //         label: "Record",
+  //         kbd: "r",
+  //         readonlyOk: false,
+
+  //         onSelect: async () => {
+  //           if (!isRecording) {
+  //             startRecording();
+  //           } else {
+  //             await stopRecording(editor);
+  //           }
+  //         },
+  //       };
+  //       return tools;
+  //     },
+  //   }),
+  //   // [recordOnce, uploadToFirebase]
+  //   [isRecording, startRecording, stopRecording]
+  // );
+
+  const startRecordingRef = useRef(startRecording);
+  const stopRecordingRef = useRef(stopRecording);
+  const isRecordingRef = useRef(isRecording);
+
+  useEffect(() => {
+    startRecordingRef.current = startRecording;
+  }, [startRecording]);
+  useEffect(() => {
+    stopRecordingRef.current = stopRecording;
+  }, [stopRecording]);
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
+
   const uiOverrides = useMemo(
     () => ({
       tools(editor, tools) {
@@ -782,20 +838,18 @@ const CollaborativeWhiteboard = () => {
           label: "Record",
           kbd: "r",
           readonlyOk: false,
-
           onSelect: async () => {
-            if (!isRecording) {
-              startRecording();
+            if (!isRecordingRef.current) {
+              await startRecordingRef.current?.();
             } else {
-              await stopRecording(editor);
+              await stopRecordingRef.current?.(editor);
             }
           },
         };
         return tools;
       },
     }),
-    // [recordOnce, uploadToFirebase]
-    [isRecording, startRecording, stopRecording]
+    []
   );
 
   const openChatForShape = useCallback(
@@ -1158,6 +1212,44 @@ const CollaborativeWhiteboard = () => {
     );
   }
 
+  function ToolbarComp(props) {
+    // read editor & any global UI state here via hooks/refs/context as needed
+    return <DefaultToolbar {...props} /* render your mic button etc. */ />;
+  }
+
+  function ContextMenuComp(props) {
+    return (
+      <CustomContextMenu
+        {...props}
+        /* read state inside or via a custom hook instead of closing over parent state */
+      />
+    );
+  }
+
+  function InFrontComp(props) {
+    return (
+      <>
+        <SelectionLogger />
+        <ContextToolbarComponent {...props} />
+        <HoverActionBadge
+          onIconClick={/* stable callback via ref (below) */ undefined}
+        />
+        <PhaseNudgeBadges /* read needed state internally */ />
+      </>
+    );
+  }
+
+  // 2) Pass a stable components object (NO deps)
+  const components = useMemo(
+    () => ({
+      Toolbar: ToolbarComp,
+      ContextMenu: ContextMenuComp,
+      InFrontOfTheCanvas: InFrontComp,
+      ActionsMenu: CustomActionsMenu,
+    }),
+    []
+  );
+
   const tldrawComponents = useMemo(
     () => ({
       ContextMenu: (props) => {
@@ -1290,8 +1382,8 @@ const CollaborativeWhiteboard = () => {
       isRecording,
       elapsed,
       isPanelCollapsed,
-      togglePanel,
-      phaseTailShapeIds,
+      // togglePanel,
+      // phaseTailShapeIds,
       handlePhaseNudgeClick,
     ]
   );
@@ -1307,6 +1399,12 @@ const CollaborativeWhiteboard = () => {
     );
 
     useEffect(() => {
+      const editingId = editor.getEditingShapeId?.();
+      if (editingId) {
+        prevIdsRef.current = selectedIds;
+        return;
+      }
+
       const bounds =
         editor.getSelectionPageBounds?.() ??
         editor.getSelectedPageBounds?.() ??
@@ -1451,7 +1549,7 @@ const CollaborativeWhiteboard = () => {
         components={tldrawComponents}
       />
 
-      <button
+      {/* <button
         onClick={() => setShowViewer((v) => !v)}
         className="tlui-button tlui-button--icon"
         style={{
@@ -1474,9 +1572,9 @@ const CollaborativeWhiteboard = () => {
           tools={toolsMemo}
           onClose={() => setShowViewer(false)}
         />
-      )}
+      )} */}
 
-      <button
+      {/* <button
         onClick={() => setShowMini((v) => !v)}
         className="tlui-button tlui-button--icon"
         style={{
@@ -1503,7 +1601,7 @@ const CollaborativeWhiteboard = () => {
           onClose={() => setShowMini(false)}
           initial={{ w: 420, h: 280, right: 16, bottom: 16 }}
         />
-      )}
+      )} */}
 
       {!showSidebar && (
         <ChatBot
@@ -1559,77 +1657,6 @@ const CollaborativeWhiteboard = () => {
         nudgeFocusShapeId={nudgeFocusShapeId}
         onNudgeFocusComputed={() => setNudgeFocusShapeId(null)}
       />
-
-      {/* {nudgeModal.open && (
-        <div
-          className="phase-nudge-modal-backdrop"
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.35)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 11000,
-          }}
-          onClick={() => setNudgeModal((m) => ({ ...m, open: false }))}
-        >
-          <div
-            className="phase-nudge-modal"
-            style={{
-              background: "white",
-              borderRadius: 12,
-              padding: "20px 24px",
-              width: 420,
-              maxHeight: "70vh",
-              overflowY: "auto",
-              boxShadow: "0 16px 40px rgba(0,0,0,0.25)",
-            }}
-            onClick={(e) => e.stopPropagation()} // prevent backdrop close on inner click
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: 12,
-              }}
-            >
-              <h3 style={{ margin: 0, fontSize: 18 }}>
-                AI Nudge for Recent Activity
-              </h3>
-              <button
-                className="tlui-button tlui-button--icon"
-                onClick={() => setNudgeModal((m) => ({ ...m, open: false }))}
-              >
-                ✕
-              </button>
-            </div>
-
-            {nudgeModal.nudges.length === 0 ? (
-              <p style={{ fontSize: 14, color: "#555" }}>
-                No stored nudge text was found for this activity.
-              </p>
-            ) : (
-              <div style={{ display: "grid", gap: 12 }}>
-                {nudgeModal.nudges.map((msg, idx) => (
-                  <div
-                    key={idx}
-                    style={{
-                      borderRadius: 8,
-                      padding: "8px 10px",
-                      background: "rgba(0,0,0,0.03)",
-                      fontSize: 14,
-                    }}
-                  >
-                    {msg.content || msg.text || JSON.stringify(msg)}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )} */}
     </div>
   );
 };
