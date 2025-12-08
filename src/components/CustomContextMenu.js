@@ -772,8 +772,8 @@ export default function CustomContextMenu({
       );
 
       const result = await res.json();
-      if (!res.ok || data.error) {
-        console.error("Nudge analyze error:", data.error || res.statusText);
+      if (!res.ok || result.error) {
+        console.error("Nudge analyze error:", result.error || res.statusText);
         // Optionally show a soft error badge instead of crashing UI
         return;
       }
