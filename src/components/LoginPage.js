@@ -1,6 +1,19 @@
 import React, { useState, useEffect } from "react";
-import { signInWithPopup, signInWithEmailAndPassword } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import {
+  signInWithPopup,
+  signInWithEmailAndPassword,
+  signInAnonymously,
+} from "firebase/auth";
+import {
+  doc,
+  getDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+  setDoc,
+  serverTimestamp,
+} from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 import { useFlashMessage } from "../FlashMessageContext";
 import "bootstrap/dist/css/bootstrap.min.css";
@@ -11,7 +24,11 @@ const LoginPage = () => {
   const [message, setMessage] = useState(null); // optional local messages
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [showEmailForm, setShowEmailForm] = useState(false); // NEW
+  const [showEmailForm, setShowEmailForm] = useState(false);
+  const [showParticipantForm, setShowParticipantForm] = useState(false);
+  const [participantEmail, setParticipantEmail] = useState("");
+  const [participantId, setParticipantId] = useState("");
+
   const navigate = useNavigate();
   const addMessage = useFlashMessage();
 
@@ -21,6 +38,66 @@ const LoginPage = () => {
       document.body.classList.remove("login-page");
     };
   }, []);
+
+  const participantQuickLogin = async (e) => {
+    e.preventDefault();
+
+    const normalizedEmail = participantEmail.trim().toLowerCase();
+    const pid = participantId.trim();
+
+    if (!normalizedEmail || !pid) {
+      addMessage("danger", "Please enter both email and Participant ID.");
+      return;
+    }
+
+    try {
+      // 1) Verify participant exists in Firestore
+      const userRef = collection(db, "users");
+      const q = query(userRef, where("email", "==", normalizedEmail));
+
+      const snap = await getDocs(q);
+
+      if (snap.empty) {
+        addMessage(
+          "danger",
+          "Not found. Please check your email and Participant ID."
+        );
+        return;
+      }
+
+      const userData = snap.docs[0].data();
+
+      // 2) Sign in via Firebase Auth (fastest: anonymous)
+      const anonRes = await signInAnonymously(auth);
+      const uid = anonRes.user.uid;
+
+      await setDoc(doc(db, "participantSessions", uid), {
+        uid,
+        email: normalizedEmail,
+        participantId: pid,
+        role: userData.role || "participant",
+        studyId: userData.studyId || "evaluation",
+        taskName: userData.taskName || "Plan a vacation in United States",
+        teamId: userData.teamId || "TeamA",
+        createdAt: serverTimestamp(),
+      });
+
+      addMessage("success", "Welcome! Redirecting to the whiteboard...");
+
+      const studyId = userData.studyId || "evaluation";
+      const taskName = userData.taskName || "Plan a vacation in United States";
+      const teamId = userData.teamId || "TeamA";
+
+      navigate(
+        `/whiteboard/${encodeURIComponent(studyId)}/${encodeURIComponent(
+          taskName
+        )}/${encodeURIComponent(teamId)}`
+      );
+    } catch (err) {
+      console.error("Participant quick login failed:", err);
+      addMessage("danger", "Login failed. Please try again.");
+    }
+  };
 
   const handleProfileAndRedirect = async (user) => {
     const userEmail = user.email;
@@ -169,7 +246,7 @@ const LoginPage = () => {
         </div>
 
         {/* Small link to reveal email/password form */}
-        {!showEmailForm && (
+        {/* {!showEmailForm && (
           <button
             type="button"
             className="btn btn-link mt-2 p-0"
@@ -177,7 +254,7 @@ const LoginPage = () => {
           >
             Sign in with email instead
           </button>
-        )}
+        )} */}
 
         {/* Email/password login: only visible after clicking the link */}
         {showEmailForm && (
@@ -216,6 +293,65 @@ const LoginPage = () => {
 
               <button type="submit" className="btn btn-primary w-100">
                 Login with Email
+              </button>
+            </form>
+          </>
+        )}
+
+        {/* Small link to reveal participant quick login */}
+        {!showParticipantForm && (
+          <button
+            type="button"
+            className="btn btn-link mt-2 p-0"
+            onClick={() => setShowParticipantForm(true)}
+          >
+            Participant quick login
+          </button>
+        )}
+
+        {showParticipantForm && (
+          <>
+            <div className="d-flex align-items-center my-3">
+              <hr className="flex-grow-1" />
+              <span className="mx-2 text-muted">OR</span>
+              <hr className="flex-grow-1" />
+            </div>
+
+            <form onSubmit={participantQuickLogin}>
+              <div className="mb-2 text-start">
+                <label className="form-label mb-1">Email</label>
+                <input
+                  type="email"
+                  className="form-control"
+                  placeholder="yourname@lsu.edu"
+                  value={participantEmail}
+                  onChange={(e) => setParticipantEmail(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="mb-3 text-start">
+                <label className="form-label mb-1">Participant ID</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="e.g., P014"
+                  value={participantId}
+                  onChange={(e) => setParticipantId(e.target.value)}
+                  required
+                />
+              </div>
+
+              <button type="submit" className="btn btn-dark w-100">
+                Go to Whiteboard
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-link mt-2 p-0"
+                onClick={() => setShowParticipantForm(false)}
+              >
+                Cancel
               </button>
             </form>
           </>
