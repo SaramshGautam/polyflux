@@ -31,7 +31,8 @@ firebase-key.json
 *.json
 prediction-backend/
 prediction-flask-backend/
-Agents/
+Agents
+app.py
 
 
 cookies.txt
