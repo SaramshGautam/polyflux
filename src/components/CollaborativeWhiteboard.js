@@ -54,15 +54,25 @@ import { MicrophoneTool } from "../tools/MicrophoneTool";
 import CustomActionsMenu from "./CustomActionsMenu";
 import { upsertImageUrl } from "../utils/registershapes";
 import { createToggleRecorder } from "../utils/audioRecorder";
-import { MiniWhiteboard } from "./MiniWhiteboard";
-import ViewerPortal from "./ViewerPortal";
+// import { MiniWhiteboard } from "../MiniWhiteboard";
+// import ViewerPortal from "../ViewerPortal";
 import { useCanvasActionHistory } from "./useCanvasActionHistory";
+import RobotDock from "./RobotDock";
+import UnderExploreDivegence from "../assets/UnderExploreDivegence.mp4";
+import LongRunningDivergence from "../assets/LongRunningDivergence.mp4";
+import EarlyConvergence from "../assets/EarlyConvergence.mp4";
+import RefinementLoop from "../assets/RefinementLoop.mp4";
+import LongLull from "../assets/LongLull.mp4";
+import ParticipationImbalance from "../assets/ParticipationImbalance.mp4";
+import DefaultMp4 from "../assets/Default.mp4";
+import { CustomNavigationPanel } from "./CustomNavigationPanel";
 import {
   resolveImageUrl,
   extractShapeText,
   makeSelectionSummary,
   buildAiPayloadFromSelection,
 } from "./helpers/askai";
+import { useProactiveNudges } from "./whiteboard/UseProactiveNudge";
 
 const CUSTOM_TOOLS = [MicrophoneTool];
 const SHAPE_UTILS = [...defaultShapeUtils, AudioShapeUtil];
@@ -145,13 +155,566 @@ function useCameraPresence(
         { merge: true }
       ).catch((e) => {
         // Optional: log once if something slips through
-        console.warn("presence write failed", e);
+        console.log("presence write failed", e);
       });
     };
 
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
   }, [enabled, editorRef, className, projectName, teamName]);
+}
+
+// ✅ Trigger -> video mapping (use your imported mp4s)
+const TRIGGER_TO_VIDEO = {
+  stagnant_divergence: UnderExploreDivegence,
+  scattered_divergence: LongRunningDivergence,
+  early_convergence: EarlyConvergence,
+  refinement_loop: RefinementLoop,
+  long_lull: LongLull,
+  participation_imbalance_group: ParticipationImbalance,
+};
+
+// ✅ Optional ring color/phase for the robot border
+const TRIGGER_TO_PHASE = {
+  stagnant_divergence: "divergent",
+  scattered_divergence: "divergent",
+  early_convergence: "convergent",
+  refinement_loop: "convergent",
+  long_lull: "divergent",
+  participation_imbalance_group: "convergent",
+};
+
+function normalizeShapeId(id) {
+  // If your tldraw ids already include "shape:", this does nothing.
+  // If your tldraw ids are like "1FbinxG-...", it will convert to "shape:1FbinxG-..."
+  if (!id) return id;
+  return id.startsWith("shape:") ? id : `shape:${id}`;
+}
+
+function useShapeCreatedByMap(db, classroomId, projectId, teamName) {
+  const [shapeActorIdByShapeId, setShapeActorIdByShapeId] = useState({});
+
+  useEffect(() => {
+    if (!db || !classroomId || !projectId || !teamName) return;
+
+    const shapesCol = collection(
+      db,
+      "classrooms",
+      classroomId,
+      "Projects",
+      projectId,
+      "teams",
+      teamName,
+      "shapes"
+    );
+
+    const unsub = onSnapshot(shapesCol, (snap) => {
+      const next = {};
+      snap.forEach((doc) => {
+        const data = doc.data();
+        const shapeId = normalizeShapeId(data.shapeId || doc.id);
+        const createdBy = data.createdBy; // e.g. "P4"
+        if (shapeId && createdBy) next[shapeId] = createdBy;
+      });
+      setShapeActorIdByShapeId(next);
+      // console.log(
+      //   "[Firestore] shapeActorIdByShapeId size:",
+      //   Object.keys(next).length
+      // );
+    });
+
+    return () => unsub();
+  }, [db, classroomId, projectId, teamName]);
+
+  return shapeActorIdByShapeId;
+}
+
+function TypingDots() {
+  return (
+    <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+      <span style={dotStyle} />
+      <span style={{ ...dotStyle, animationDelay: "120ms" }} />
+      <span style={{ ...dotStyle, animationDelay: "240ms" }} />
+    </span>
+  );
+}
+
+const dotStyle = {
+  width: 6,
+  height: 6,
+  borderRadius: 999,
+  background: "rgba(0,0,0,.45)",
+  display: "inline-block",
+  animation: "typingDot 900ms infinite ease-in-out",
+};
+
+function HoverActionBadge({ onIconClick }) {
+  const editor = useEditor();
+
+  const hoveredId = useValue(
+    "hovered shape id",
+    () => editor.getHoveredShapeId?.() ?? null,
+    [editor]
+  );
+
+  const selectedIds = useValue(
+    "selected ids",
+    () => editor.getSelectedShapeIds(),
+    [editor]
+  );
+
+  const [visibleId, setVisibleId] = useState(null);
+  useEffect(() => {
+    const t = setTimeout(() => setVisibleId(hoveredId), hoveredId ? 120 : 0);
+    return () => clearTimeout(t);
+  }, [hoveredId]);
+
+  const isBusy =
+    editor?.inputs?.isDragging ||
+    editor?.inputs?.isPanning ||
+    Boolean(editor?.getEditingShapeId?.());
+
+  // Multi-select mode
+  if (!isBusy && selectedIds.length > 1) {
+    const bounds =
+      editor.getSelectionPageBounds?.() ??
+      editor.getSelectedPageBounds?.() ??
+      null;
+    if (!bounds) return null;
+
+    const pagePoint = { x: bounds.maxX + 12, y: bounds.minY };
+    const screenPoint = editor.pageToScreen?.(pagePoint) ?? pagePoint;
+
+    return (
+      <div
+        style={{
+          position: "fixed",
+          left: screenPoint.x,
+          top: screenPoint.y,
+          pointerEvents: "none",
+        }}
+      >
+        <button
+          className="tlui-button tlui-button--icon"
+          onClick={(e) => {
+            e.stopPropagation();
+            onIconClick?.(null);
+          }}
+          style={{
+            pointerEvents: "auto",
+            width: 140,
+            height: 38,
+            borderRadius: 5,
+            background: "white",
+            boxShadow: "0 6px 16px rgba(0,0,0,.2)",
+            display: "grid",
+            placeItems: "center",
+            opacity: 0.9,
+          }}
+          title={`Ask AI about ${selectedIds.length} items`}
+        >
+          <span>
+            <FontAwesomeIcon icon={faRobot} style={{ fontSize: 14 }} /> Ask AI (
+            {selectedIds.length})
+          </span>
+        </button>
+      </div>
+    );
+  }
+
+  // Single hover mode
+  if (!visibleId || isBusy) return null;
+
+  const isSelected = selectedIds.includes(visibleId);
+  if (isSelected) return null;
+
+  const pageBounds =
+    editor.getShapePageBounds?.(visibleId) ??
+    editor.getPageBounds?.(visibleId) ??
+    null;
+  if (!pageBounds) return null;
+
+  const anchorPage = { x: pageBounds.maxX - 20, y: pageBounds.minY };
+  const anchorScreen = editor.pageToScreen?.(anchorPage) ?? anchorPage;
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        left: anchorScreen.x + 12,
+        top: anchorScreen.y,
+        pointerEvents: "none",
+      }}
+    >
+      <button
+        className="tlui-button tlui-button--icon"
+        onClick={(e) => {
+          e.stopPropagation();
+          editor.setSelectedShapes?.([visibleId]);
+          onIconClick?.(visibleId);
+        }}
+        style={{
+          pointerEvents: "auto",
+          width: 120,
+          height: 38,
+          borderRadius: 5,
+          background: "white",
+          boxShadow: "0 6px 16px rgba(0,0,0,.2)",
+          display: "grid",
+          placeItems: "center",
+          opacity: 0.8,
+        }}
+        title="Quick Ask AI"
+      >
+        <span>
+          <FontAwesomeIcon icon={faRobot} style={{ fontSize: 14 }} /> Ask AI
+        </span>
+      </button>
+    </div>
+  );
+}
+
+function PhaseNudgeBadges({ shapeIds, onClickShape, previewText }) {
+  const editor = useEditor();
+  const camera = useValue("camera", () => editor?.getCamera?.() ?? null, [
+    editor,
+  ]);
+
+  const [badge, setBadge] = useState(null);
+  const [highlight, setHighlight] = useState(false);
+
+  // tooltip state
+  const [isHovering, setIsHovering] = useState(false);
+  const [typing, setTyping] = useState(false);
+
+  // When hover starts, show typing briefly
+  useEffect(() => {
+    if (!isHovering) return;
+    setTyping(true);
+    const t = setTimeout(() => setTyping(false), 550);
+    return () => clearTimeout(t);
+  }, [isHovering]);
+
+  useEffect(() => {
+    if (!editor || !Array.isArray(shapeIds) || shapeIds.length === 0) {
+      setBadge(null);
+      return;
+    }
+
+    const boundsList = [];
+    shapeIds.forEach((id) => {
+      const bounds =
+        editor.getShapePageBounds?.(id) ?? editor.getPageBounds?.(id) ?? null;
+      if (!bounds) return;
+      boundsList.push({ id, bounds });
+    });
+
+    if (!boundsList.length) {
+      setBadge(null);
+      return;
+    }
+
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+
+    for (const { bounds } of boundsList) {
+      if (bounds.minX < minX) minX = bounds.minX;
+      if (bounds.minY < minY) minY = bounds.minY;
+      if (bounds.maxX > maxX) maxX = bounds.maxX;
+      if (bounds.maxY > maxY) maxY = bounds.maxY;
+    }
+
+    if (
+      !isFinite(minX) ||
+      !isFinite(minY) ||
+      !isFinite(maxX) ||
+      !isFinite(maxY)
+    ) {
+      setBadge(null);
+      return;
+    }
+
+    // ✅ TOP-LEFT placement (slightly outside the cluster box)
+    const cornerPagePoint = {
+      x: minX - 10,
+      y: minY - 10,
+    };
+
+    // closest shape id to anchor click behavior
+    let closestShapeId = boundsList[0].id;
+    let bestDist2 = Infinity;
+
+    for (const { id, bounds } of boundsList) {
+      const cx = (bounds.minX + bounds.maxX) / 2;
+      const cy = (bounds.minY + bounds.maxY) / 2;
+      const dx = cx - cornerPagePoint.x;
+      const dy = cy - cornerPagePoint.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestDist2) {
+        bestDist2 = d2;
+        closestShapeId = id;
+      }
+    }
+
+    const screenPoint =
+      editor.pageToScreen?.(cornerPagePoint) ?? cornerPagePoint;
+
+    setBadge({
+      shapeId: closestShapeId,
+      left: screenPoint.x,
+      top: screenPoint.y,
+    });
+
+    setHighlight(true);
+    const t = setTimeout(() => setHighlight(false), 2500);
+    return () => clearTimeout(t);
+  }, [editor, shapeIds, camera]);
+
+  if (!badge) return null;
+
+  const text =
+    (previewText || "").trim() ||
+    "I noticed a pattern in your recent activity. Want a quick suggestion?";
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        left: badge.left,
+        top: badge.top,
+        zIndex: 10050,
+        pointerEvents: "none",
+      }}
+    >
+      {/* Badge */}
+      <button
+        className={
+          "tlui-button tlui-button--icon phase-nudge-badge" +
+          (highlight ? " phase-nudge-badge--bounce" : "")
+        }
+        style={{
+          pointerEvents: "auto",
+          width: 32,
+          height: 32,
+          borderRadius: 999,
+          background: "white",
+          boxShadow: "0 6px 16px rgba(0,0,0,.20)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          position: "relative",
+        }}
+        title="AI nudge"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClickShape?.(badge.shapeId);
+        }}
+        onMouseEnter={() => setIsHovering(true)}
+        onMouseLeave={() => setIsHovering(false)}
+      >
+        <FontAwesomeIcon icon={faRobot} style={{ fontSize: 14 }} />
+
+        {/* Tooltip */}
+        {isHovering && (
+          <div
+            style={{
+              position: "absolute",
+              left: 40,
+              top: -8,
+              width: 260,
+              pointerEvents: "auto",
+            }}
+            onMouseEnter={() => setIsHovering(true)}
+            onMouseLeave={() => setIsHovering(false)}
+          >
+            <div
+              style={{
+                background: "white",
+                borderRadius: 14,
+                boxShadow: "0 10px 28px rgba(0,0,0,.22)",
+                border: "1px solid rgba(0,0,0,.08)",
+                padding: "10px 12px",
+                textAlign: "left",
+                flexDirection: "column",
+                alignItems: "flex-start",
+                gap: 10,
+              }}
+            >
+              {/* little “tail” */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: -6,
+                  top: 14,
+                  width: 12,
+                  height: 12,
+                  background: "white",
+                  transform: "rotate(45deg)",
+                  borderLeft: "1px solid rgba(0,0,0,.08)",
+                  borderBottom: "1px solid rgba(0,0,0,.08)",
+                }}
+              />
+
+              <div
+                style={{ display: "flex", gap: 10, alignItems: "flex-start" }}
+              >
+                {/* tiny bot avatar */}
+                <div
+                  style={{
+                    width: 24,
+                    height: 24,
+                    borderRadius: 999,
+                    background: "rgba(0,0,0,.06)",
+                    display: "grid",
+                    placeItems: "center",
+                    flex: "0 0 auto",
+                    marginTop: 2,
+                  }}
+                >
+                  <FontAwesomeIcon icon={faRobot} style={{ fontSize: 12 }} />
+                </div>
+
+                <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      lineHeight: 1.35,
+                      whiteSpace: "normal",
+                      wordBreak: "break-word",
+                      alignItems: "left",
+                      textAlign: "left",
+                      // alignSelf: "flex-start",
+                    }}
+                  >
+                    {typing ? <TypingDots /> : text}
+                  </div>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "flex-end",
+                      marginTop: 10,
+                      gap: 8,
+                    }}
+                  >
+                    <button
+                      className="tlui-button"
+                      style={{
+                        height: 28,
+                        padding: "0 10px",
+                        borderRadius: 10,
+                        background: "rgba(0,0,0,.06)",
+                        border: "1px solid rgba(0,0,0,.08)",
+                        alignSelf: "left",
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onClickShape?.(badge.shapeId);
+                      }}
+                      title="Open the nudge in chat"
+                    >
+                      Open Nudge
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* tiny “sent time” vibe */}
+            <div
+              style={{
+                fontSize: 11,
+                opacity: 0.55,
+                marginTop: 6,
+                paddingLeft: 34,
+              }}
+            >
+              just now
+            </div>
+          </div>
+        )}
+      </button>
+    </div>
+  );
+}
+
+function SelectionLogger({ selectionModeActive, roomMeta, upsertImageUrlFn }) {
+  const editor = useEditor();
+  const prevIdsRef = useRef([]);
+
+  const selectedIds = useValue(
+    "selected ids",
+    () => editor.getSelectedShapeIds(),
+    [editor]
+  );
+
+  useEffect(() => {
+    const editingId = editor.getEditingShapeId?.();
+    if (editingId) {
+      prevIdsRef.current = selectedIds;
+      return;
+    }
+
+    // --- selection-mode clip sending ---
+    if (selectionModeActive) {
+      const prev = new Set(prevIdsRef.current);
+      const curr = new Set(selectedIds);
+      const newlySelected = [...curr].filter((id) => !prev.has(id));
+
+      if (newlySelected.length) {
+        const clips = newlySelected
+          .map((id) => {
+            const shape = editor.getShape(id);
+            if (!shape) return null;
+
+            const isImage = shape.type === "image";
+            const url = isImage ? resolveImageUrl(editor, shape) : null;
+            const text = extractShapeText(shape);
+
+            return {
+              id: shape.id,
+              snip: isImage ? url || "" : text || "",
+              kind: isImage ? "image" : "note",
+            };
+          })
+          .filter(Boolean);
+
+        if (clips.length) {
+          window.dispatchEvent(
+            new CustomEvent("chatbot-add-clip", { detail: { clips } })
+          );
+        }
+      }
+    }
+
+    // --- image URL upsert ---
+    selectedIds.forEach((id) => {
+      const shape = editor.getShape(id);
+      if (!shape || shape.type !== "image") return;
+
+      const url = resolveImageUrl(editor, shape);
+      if (!url) return;
+
+      if (/^https?:\/\//i.test(url)) {
+        upsertImageUrlFn?.(roomMeta, shape.id, url).then((firebaseUrl) => {
+          if (!firebaseUrl) return;
+          const current = editor.getShape(shape.id);
+          if (!current) return;
+          editor.updateShape({
+            id: current.id,
+            type: "image",
+            props: { ...current.props, url: firebaseUrl },
+          });
+        });
+      }
+    });
+
+    prevIdsRef.current = selectedIds;
+  }, [selectedIds, editor, selectionModeActive, roomMeta, upsertImageUrlFn]);
+
+  return null;
 }
 
 const CollaborativeWhiteboard = () => {
@@ -180,13 +743,257 @@ const CollaborativeWhiteboard = () => {
   const [showViewer, setShowViewer] = useState(false);
   const [editorReady, setEditorReady] = useState(false);
 
+  const [sessionActors, setSessionActors] = useState([]);
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(true);
+
+  // --- bridge refs (anything used inside Tldraw components that changes) ---
+  const panelCollapsedRef = useRef(isPanelCollapsed);
+
+  useEffect(() => {
+    console.log("[Canvas] editorReady changed:", editorReady);
+  }, [editorReady]);
 
   const [selectionModeActive, setSelectionModeActive] = useState(false);
 
   const [phaseTailShapeIds, setPhaseTailShapeIds] = useState([]);
 
   const [nudgeFocusShapeId, setNudgeFocusShapeId] = useState(null);
+  const [currentPhaseName, setCurrentPhaseName] = useState(null);
+  const [currentPhaseDetail, setCurrentPhaseDetail] = useState(null);
+  const [isPhasePulsing, setIsPhasePulsing] = useState(false);
+  const [phaseNudgePreview, setPhaseNudgePreview] = useState("");
+
+  // ✅ Robot animation state
+  const [robotSrc, setRobotSrc] = useState(DefaultMp4);
+  const [robotLoop, setRobotLoop] = useState(true);
+  const [robotPhase, setRobotPhase] = useState(null);
+  const ROBOT_GAP_PX = 10; // how many px above the minimap/panel
+  const ROBOT_SIZE = 50; // must match <RobotDock size={...} />
+
+  const [robotPosition, setRobotPosition] = useState({ left: 16, bottom: 158 });
+
+  useEffect(() => {
+    if (!editorReady) return;
+
+    let el = null;
+    let ro = null;
+    let raf = 0;
+
+    const update = () => {
+      if (!el) return;
+
+      const rect = el.getBoundingClientRect();
+
+      // Place robot directly ABOVE the nav panel (collapsed or expanded)
+      const left = Math.round(rect.left);
+      const top = Math.round(rect.top - ROBOT_GAP_PX - ROBOT_SIZE);
+
+      // Clamp to viewport a bit (optional)
+      const safeLeft = Math.max(
+        8,
+        Math.min(left, window.innerWidth - ROBOT_SIZE - 8)
+      );
+      const safeTop = Math.max(8, top);
+
+      setRobotPosition({ left: safeLeft, top: safeTop });
+    };
+
+    const bind = () => {
+      el = document.querySelector('[data-navpanel="true"]');
+      if (!el) return false;
+
+      // Resize observer catches collapse/expand + internal layout changes
+      ro = new ResizeObserver(() => {
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(update);
+      });
+      ro.observe(el);
+
+      // Window resize can change fixed UI positions
+      window.addEventListener("resize", update);
+
+      // Initial
+      update();
+      return true;
+    };
+
+    // Try now, and if not found yet, retry briefly
+    if (!bind()) {
+      const id = setInterval(() => {
+        if (bind()) clearInterval(id);
+      }, 150);
+      return () => clearInterval(id);
+    }
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", update);
+      ro?.disconnect?.();
+    };
+  }, [editorReady]);
+
+  const lastTriggerRef = useRef(null);
+  const NUDGE_COOLDOWN_MS = 120_000;
+
+  // Global cooldown: after we emit an auto nudge, don't call /analyze again for 120s
+  const autoGlobalCooldownUntilRef = useRef(0);
+
+  // Same-trigger cooldown: don't emit same trigger again for 120s
+  const autoTriggerCooldownMapRef = useRef({}); // { [triggerId]: lastEmittedAtMs }
+
+  const [robotCountdownEndsAt, setRobotCountdownEndsAt] = useState(null);
+
+  const triggerLoopTimerRef = useRef(null);
+
+  const actorIdRef = useRef("anon");
+  useEffect(() => {
+    actorIdRef.current =
+      auth.currentUser?.displayName || auth.currentUser?.email || "anon";
+  }, []);
+
+  // prevents infinite loops when we call editor.updateShape inside a listener
+  const stampingRef = useRef(false);
+
+  useEffect(() => {
+    if (!editorReady) return;
+    const editor = editorInstance.current;
+    if (!editor) return;
+
+    const unlisten = editor.store.listen(
+      (entry) => {
+        if (stampingRef.current) return;
+
+        const actorId = actorIdRef.current;
+
+        const added = entry?.changes?.added
+          ? Object.values(entry.changes.added)
+          : [];
+        const updated = entry?.changes?.updated
+          ? Object.values(entry.changes.updated)
+          : [];
+
+        // Helper to handle both add + update
+        const maybeStamp = (rec) => {
+          // tldraw records: shape records typically have typeName === "shape"
+          if (!rec) return;
+          const isShapeRecord =
+            rec.typeName === "shape" ||
+            rec.type === "shape" ||
+            rec.kind === "shape";
+          if (!isShapeRecord) return;
+
+          const shape = editor.getShape(rec.id);
+          if (!shape) return;
+
+          const nextMeta = { ...(shape.meta || {}) };
+
+          // If createdBy not set, set it once
+          if (!nextMeta.createdBy) nextMeta.createdBy = actorId;
+
+          // Always stamp updatedBy on user-driven updates
+          nextMeta.updatedBy = actorId;
+          nextMeta.updatedAt = Date.now();
+
+          // Avoid no-op updates
+          const same =
+            shape.meta?.createdBy === nextMeta.createdBy &&
+            shape.meta?.updatedBy === nextMeta.updatedBy &&
+            shape.meta?.updatedAt === nextMeta.updatedAt;
+
+          if (same) return;
+
+          stampingRef.current = true;
+          try {
+            editor.updateShape({
+              id: shape.id,
+              type: shape.type,
+              meta: nextMeta,
+            });
+          } finally {
+            // release on next tick so we don't re-enter immediately
+            setTimeout(() => {
+              stampingRef.current = false;
+            }, 0);
+          }
+        };
+
+        // On add: stamp createdBy + updatedBy
+        for (const rec of added) maybeStamp(rec);
+
+        // On update: stamp updatedBy
+        for (const rec of updated) maybeStamp(rec);
+      },
+      { scope: "user" } // IMPORTANT: only local user's actions
+    );
+
+    return () => {
+      try {
+        unlisten?.();
+      } catch {}
+    };
+  }, [editorReady]);
+
+  const revertRobotToDefault = useCallback(() => {
+    if (triggerLoopTimerRef.current) {
+      clearTimeout(triggerLoopTimerRef.current);
+      triggerLoopTimerRef.current = null;
+    }
+    setRobotLoop(true);
+    setRobotSrc(DefaultMp4);
+    setRobotPhase(null);
+    setRobotCountdownEndsAt(null);
+    lastTriggerRef.current = null;
+  }, []);
+
+  const TRIGGER_DURATION_MS = 30000;
+
+  const playTriggerAnimation = useCallback(
+    (triggerId) => {
+      if (!triggerId) {
+        console.log(
+          "[RobotDock] playTriggerAnimation called with no triggerId"
+        );
+        return;
+      }
+
+      console.log("[RobotDock] Playing animation for trigger:", triggerId);
+
+      // Optional: avoid replaying the same trigger repeatedly
+      // if (lastTriggerRef.current === triggerId) return;
+      lastTriggerRef.current = triggerId;
+
+      const vid = TRIGGER_TO_VIDEO[triggerId];
+      if (!vid) return;
+
+      if (triggerLoopTimerRef.current) {
+        clearTimeout(triggerLoopTimerRef.current);
+        triggerLoopTimerRef.current = null;
+      }
+
+      lastTriggerRef.current = triggerId;
+      setRobotPhase(TRIGGER_TO_PHASE[triggerId] || null);
+
+      const endsAt = Date.now() + TRIGGER_DURATION_MS;
+      setRobotCountdownEndsAt(endsAt);
+
+      // Play once; RobotDock will revert via onEnded
+      setRobotSrc(vid);
+      setRobotLoop(true);
+
+      triggerLoopTimerRef.current = setTimeout(() => {
+        revertRobotToDefault();
+      }, TRIGGER_DURATION_MS);
+    },
+    [revertRobotToDefault]
+  );
+
+  // const revertRobotToDefault = useCallback(() => {
+  //   setRobotLoop(true);
+  //   setRobotSrc(DefaultMp4);
+  //   setRobotPhase(null);
+  //   lastTriggerRef.current = null;
+  // }, []);
+
   const nudgeHoverPrevSelectionRef = useRef(null);
 
   const [nudgeModal, setNudgeModal] = useState({
@@ -204,6 +1011,16 @@ const CollaborativeWhiteboard = () => {
     teamName,
     enabled: editorReady,
   });
+
+  useEffect(() => {
+    if (!isPhasePulsing) return;
+
+    const id = setTimeout(() => {
+      setIsPhasePulsing(false);
+    }, 3000);
+
+    return () => clearTimeout(id);
+  }, [isPhasePulsing]);
 
   useEffect(() => {
     if (!className || !projectName || !teamName) return;
@@ -235,7 +1052,7 @@ const CollaborativeWhiteboard = () => {
         }));
 
         setShapesForAnalysis(shapes);
-        console.log("[FS shapes] for analysis:", shapes);
+        // console.log("[FS shapes] for analysis:", shapes);
       },
       (error) => {
         console.error("Error listening to shapes:", error);
@@ -244,6 +1061,57 @@ const CollaborativeWhiteboard = () => {
 
     return () => unsubscribe();
   }, [className, projectName, teamName]);
+
+  useEffect(() => {
+    if (!className || !projectName || !teamName) return;
+
+    const presCol = collection(
+      db,
+      "classrooms",
+      className,
+      "Projects",
+      projectName,
+      "teams",
+      teamName,
+      "presence"
+    );
+
+    const unsub = onSnapshot(
+      presCol,
+      (snap) => {
+        const actors = snap.docs.map((d) => {
+          const data = d.data() || {};
+          // const id = d.id;
+
+          return {
+            id: d.id,
+            label: data.displayName || data.email || d.id,
+            email: data.email || null,
+            photoURL: data.photoURL || null,
+            lastActive: data.lastActive || null,
+          };
+        });
+
+        // optional sort for nicer dropdown
+        actors.sort((a, b) => (a.label || "").localeCompare(b.label || ""));
+
+        setSessionActors(actors);
+      },
+      (err) => console.log("[presence] listen error", err)
+    );
+
+    return () => unsub();
+  }, [className, projectName, teamName]);
+
+  const actorsFromFS = useMemo(() => {
+    const set = new Set();
+    (shapesForAnalysis || []).forEach((s) => {
+      if (s.createdBy) set.add(s.createdBy);
+      // if later you add updatedBy in firestore, include it:
+      // if (s.updatedBy) set.add(s.updatedBy);
+    });
+    return Array.from(set).sort();
+  }, [shapesForAnalysis]);
 
   useEffect(() => {
     const handler = (e) => {
@@ -256,68 +1124,6 @@ const CollaborativeWhiteboard = () => {
     return () => window.removeEventListener("chatbot-selection-mode", handler);
   }, []);
 
-  // useEffect(() => {
-  //   const handleNudgeHover = (e) => {
-  //     const detail = e.detail || {};
-  //     const editor = editorInstance.current;
-  //     if (!editor) return;
-
-  //     const active = !!detail.active;
-  //     const tailShapeIds = Array.isArray(detail.tailShapeIds)
-  //       ? detail.tailShapeIds
-  //       : [];
-
-  //     // When hover starts
-  //     if (active && tailShapeIds.length) {
-  //       // Save current selection once
-  //       if (!nudgeHoverPrevSelectionRef.current) {
-  //         try {
-  //           nudgeHoverPrevSelectionRef.current = editor.getSelectedShapeIds();
-  //         } catch (err) {
-  //           console.warn("Failed to read selected shape ids:", err);
-  //           nudgeHoverPrevSelectionRef.current = [];
-  //         }
-  //       }
-
-  //       // Clear and select only tail shapes (filter to shapes that still exist)
-  //       const validIds = tailShapeIds.filter((id) => !!editor.getShape(id));
-  //       try {
-  //         editor.setSelectedShapes(validIds);
-  //       } catch (err) {
-  //         console.warn("Failed to set selection for nudge hover:", err);
-  //       }
-
-  //       return;
-  //     }
-
-  //     // When hover ends (or active false / no ids): restore previous selection
-  //     const prev = nudgeHoverPrevSelectionRef.current;
-  //     if (prev) {
-  //       const validPrev = prev.filter((id) => !!editor.getShape(id));
-  //       try {
-  //         editor.setSelectedShapes(validPrev);
-  //       } catch (err) {
-  //         console.warn("Failed to restore previous selection:", err);
-  //       }
-  //     } else {
-  //       // No previous selection → just clear
-  //       try {
-  //         editor.setSelectedShapes([]);
-  //       } catch (err) {
-  //         console.warn("Failed to clear selection on hover end:", err);
-  //       }
-  //     }
-
-  //     nudgeHoverPrevSelectionRef.current = null;
-  //   };
-
-  //   window.addEventListener("chatbot-nudge-hover", handleNudgeHover);
-  //   return () =>
-  //     window.removeEventListener("chatbot-nudge-hover", handleNudgeHover);
-  // }, []);
-
-  // at top of component:
-
   useEffect(() => {
     const handleNudgeHover = (e) => {
       console.group("[Canvas] chatbot-nudge-hover event");
@@ -328,7 +1134,7 @@ const CollaborativeWhiteboard = () => {
 
       const editor = editorInstance.current;
       if (!editor) {
-        console.warn("[Canvas] No editor instance yet");
+        console.log("[Canvas] No editor instance yet");
         console.groupEnd();
         return;
       }
@@ -349,7 +1155,7 @@ const CollaborativeWhiteboard = () => {
             console.log("[Canvas] Saving previous selection:", currentSel);
             nudgeHoverPrevSelectionRef.current = currentSel;
           } catch (err) {
-            console.warn("[Canvas] Failed to read selected shape ids:", err);
+            console.log("[Canvas] Failed to read selected shape ids:", err);
             nudgeHoverPrevSelectionRef.current = [];
           }
         }
@@ -359,7 +1165,7 @@ const CollaborativeWhiteboard = () => {
           const shape = editor.getShape(id);
           const exists = !!shape;
           if (!exists) {
-            console.warn("[Canvas] Tail shape not found in editor:", id);
+            console.log("[Canvas] Tail shape not found in editor:", id);
           } else {
             console.log("[Canvas] Tail shape exists:", id, shape);
           }
@@ -375,10 +1181,7 @@ const CollaborativeWhiteboard = () => {
             editor.getSelectedShapeIds()
           );
         } catch (err) {
-          console.warn(
-            "[Canvas] Failed to set selection for nudge hover:",
-            err
-          );
+          console.log("[Canvas] Failed to set selection for nudge hover:", err);
         }
 
         console.groupEnd();
@@ -399,14 +1202,14 @@ const CollaborativeWhiteboard = () => {
             editor.getSelectedShapeIds()
           );
         } catch (err) {
-          console.warn("[Canvas] Failed to restore previous selection:", err);
+          console.log("[Canvas] Failed to restore previous selection:", err);
         }
       } else {
         console.log("[Canvas] No previous selection, clearing selection");
         try {
           editor.setSelectedShapes([]);
         } catch (err) {
-          console.warn("[Canvas] Failed to clear selection on hover end:", err);
+          console.log("[Canvas] Failed to clear selection on hover end:", err);
         }
       }
 
@@ -511,72 +1314,35 @@ const CollaborativeWhiteboard = () => {
   //   };
   // }, [store]);
 
-  useEffect(() => {
-    if (!editorReady) return;
-    if (!className || !projectName || !teamName) return;
+  // useEffect(() => {
+  //   if (!editorReady) return;
+  //   if (!className || !projectName || !teamName) return;
 
-    const handleBeforeUnload = (event) => {
-      // Fire and forget – we can't `await` here
-      saveCanvasPreview();
-    };
+  //   const handleBeforeUnload = (event) => {
+  //     // Fire and forget – we can't `await` here
+  //     saveCanvasPreview();
+  //   };
 
-    window.addEventListener("beforeunload", handleBeforeUnload);
+  //   window.addEventListener("beforeunload", handleBeforeUnload);
 
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-      // Component is unmounting (user navigated away from whiteboard route)
-      saveCanvasPreview();
-    };
-  }, [editorReady, className, projectName, teamName]);
+  //   return () => {
+  //     window.removeEventListener("beforeunload", handleBeforeUnload);
+  //     // Component is unmounting (user navigated away from whiteboard route)
+  //     saveCanvasPreview();
+  //   };
+  // }, [editorReady, className, projectName, teamName]);
 
-  // const fetchActionHistory = async (userContext, setActionHistory) => {
-  //   if (!userContext) return;
-
-  //   const { className, projectName, teamName } = userContext;
-  //   // const historyRef = collection(
-  //   //   db,
-  //   //   `classrooms/${className}/Projects/${projectName}/teams/${teamName}/history`
-  //   // );
-  //   console.log(
-  //     `---- User Context --- ${className} and ${projectName} and  ${teamName}`
-  //   );
-
-  //   const historyRef = collection(
-  //     db,
-  //     "classrooms",
-  //     className,
-  //     "Projects",
-  //     projectName,
-  //     "teams",
-  //     teamName,
-  //     "history"
-  //   );
-
-  //   try {
-  //     const q = query(historyRef, orderBy("timestamp", "desc"));
-  //     const querySnapshot = await getDocs(q);
-  //     const historyLogs = querySnapshot.docs.map((doc) => doc.data());
-  //     console.log("History Logs ---- \n", historyLogs);
-
-  //     setActionHistory(historyLogs);
-  //   } catch (error) {
-  //     console.error("❌ Error fetching history:", error);
-  //   }
+  // const togglePanel = () => {
+  //   console.log("[Parent] togglePanel called");
+  //   setIsPanelCollapsed((prev) => {
+  //     console.log("[Parent] Collapsed before:", prev, " → after:", !prev);
+  //     return !prev;
+  //   });
   // };
 
-  // useEffect(() => {
-  //   if (!roomId || !className || !projectName || !teamName) return;
-  //   const userContext = { className, projectName, teamName };
-  //   fetchActionHistory(userContext, setActionHistory);
-  // }, [className, projectName, teamName, roomId]);
-
-  const togglePanel = () => {
-    console.log("[Parent] togglePanel called");
-    setIsPanelCollapsed((prev) => {
-      console.log("[Parent] Collapsed before:", prev, " → after:", !prev);
-      return !prev;
-    });
-  };
+  const togglePanel = useCallback(() => {
+    setIsPanelCollapsed((p) => !p);
+  }, []);
 
   useEffect(() => {
     if (!isRecording || !recordingStartAt) {
@@ -636,71 +1402,45 @@ const CollaborativeWhiteboard = () => {
   }, []);
 
   // const saveCanvasPreview = useCallback(async () => {
-  //   if (!editorInstance.current) return;
+  //   const editor = editorInstance.current;
+  //   if (!editor || !className || !projectName || !teamName) return;
 
-  //   const shapeIds = editorInstance.current.getCurrentPageShapeIds();
-  //   if (shapeIds.size === 0) return;
+  //   const shapeIds = editor.getCurrentPageShapeIds();
+  //   if (!shapeIds || shapeIds.size === 0) return;
 
   //   try {
-  //     const { blob } = await editorInstance.current.toImage([...shapeIds], {
+  //     // 1) Render the current page shapes to a PNG blob
+  //     const { blob } = await editor.toImage([...shapeIds], {
   //       format: "png",
-  //       // bounds,
-  //       // background: false,
   //       padding: 20,
-  //       // background: false,
+  //       background: "white", // optional: ensure white background instead of transparent
   //     });
 
-  //     // Create a download link for the blob
-  //     const url = URL.createObjectURL(blob);
-  //     localStorage.setItem(
-  //       `preview-${className}-${projectName}-${teamName}`,
-  //       url
+  //     // 2) Upload to Firebase Storage
+  //     const path = `previews/${className}/${projectName}/${teamName}.png`;
+  //     const imgRef = ref(storage, path);
+
+  //     await uploadBytes(imgRef, blob, { contentType: "image/png" });
+  //     const downloadURL = await getDownloadURL(imgRef);
+
+  //     // 3) Save previewUrl to the team document in Firestore
+  //     const teamRef = doc(
+  //       db,
+  //       "classrooms",
+  //       className,
+  //       "Projects",
+  //       projectName,
+  //       "teams",
+  //       teamName
   //     );
+
+  //     await setDoc(teamRef, { previewUrl: downloadURL }, { merge: true });
+
+  //     console.log("✅ Canvas preview saved:", path);
   //   } catch (error) {
-  //     console.error("Error uploading preview:", error);
+  //     console.error("Error saving canvas preview:", error);
   //   }
   // }, [className, projectName, teamName]);
-
-  const saveCanvasPreview = useCallback(async () => {
-    const editor = editorInstance.current;
-    if (!editor || !className || !projectName || !teamName) return;
-
-    const shapeIds = editor.getCurrentPageShapeIds();
-    if (!shapeIds || shapeIds.size === 0) return;
-
-    try {
-      // 1) Render the current page shapes to a PNG blob
-      const { blob } = await editor.toImage([...shapeIds], {
-        format: "png",
-        padding: 20,
-        background: "white", // optional: ensure white background instead of transparent
-      });
-
-      // 2) Upload to Firebase Storage
-      const path = `previews/${className}/${projectName}/${teamName}.png`;
-      const imgRef = ref(storage, path);
-
-      await uploadBytes(imgRef, blob, { contentType: "image/png" });
-      const downloadURL = await getDownloadURL(imgRef);
-
-      // 3) Save previewUrl to the team document in Firestore
-      const teamRef = doc(
-        db,
-        "classrooms",
-        className,
-        "Projects",
-        projectName,
-        "teams",
-        teamName
-      );
-
-      await setDoc(teamRef, { previewUrl: downloadURL }, { merge: true });
-
-      console.log("✅ Canvas preview saved:", path);
-    } catch (error) {
-      console.error("Error saving canvas preview:", error);
-    }
-  }, [className, projectName, teamName]);
 
   const uploadToFirebase = useCallback(async (blob) => {
     try {
@@ -731,7 +1471,7 @@ const CollaborativeWhiteboard = () => {
         error.code === "storage/unauthorized" ||
         error.code === "storage/cors-error"
       ) {
-        console.warn("Using local blob URL as fallback");
+        console.log("Using local blob URL as fallback");
         return URL.createObjectURL(blob);
       }
       throw error;
@@ -792,30 +1532,6 @@ const CollaborativeWhiteboard = () => {
     [uploadToFirebase]
   );
 
-  // const uiOverrides = useMemo(
-  //   () => ({
-  //     tools(editor, tools) {
-  //       tools.microphone = {
-  //         id: "microphone",
-  //         label: "Record",
-  //         kbd: "r",
-  //         readonlyOk: false,
-
-  //         onSelect: async () => {
-  //           if (!isRecording) {
-  //             startRecording();
-  //           } else {
-  //             await stopRecording(editor);
-  //           }
-  //         },
-  //       };
-  //       return tools;
-  //     },
-  //   }),
-  //   // [recordOnce, uploadToFirebase]
-  //   [isRecording, startRecording, stopRecording]
-  // );
-
   const startRecordingRef = useRef(startRecording);
   const stopRecordingRef = useRef(stopRecording);
   const isRecordingRef = useRef(isRecording);
@@ -851,6 +1567,20 @@ const CollaborativeWhiteboard = () => {
     }),
     []
   );
+
+  const shapeActorIdByShapeId = useShapeCreatedByMap(
+    db,
+    className,
+    projectName,
+    teamName
+  );
+
+  const actorOptions = useMemo(() => {
+    return (sessionActors || []).map((a) => ({
+      id: a.id,
+      label: a.label || a.email || a.id,
+    }));
+  }, [sessionActors]);
 
   const openChatForShape = useCallback(
     (shapeId) => {
@@ -894,323 +1624,530 @@ const CollaborativeWhiteboard = () => {
     [setSelectedTargets, setSelectedShape]
   );
 
-  const HoverActionBadge = ({ onIconClick }) => {
-    const editor = useEditor();
-
-    // hovered shape
-    const hoveredId = useValue(
-      "hovered shape id",
-      () => editor.getHoveredShapeId?.() ?? null,
-      [editor]
-    );
-
-    // selected shapes
-    const selectedIds = useValue(
-      "selected ids",
-      () => editor.getSelectedShapeIds(),
-      [editor]
-    );
-
-    // debounce hovered id so it doesn't flicker
-    const [visibleId, setVisibleId] = useState(null);
-    useEffect(() => {
-      const t = setTimeout(() => setVisibleId(hoveredId), hoveredId ? 120 : 0);
-      return () => clearTimeout(t);
-    }, [hoveredId]);
-
-    const isBusy =
-      editor?.inputs?.isDragging ||
-      editor?.inputs?.isPanning ||
-      Boolean(editor?.getEditingShapeId?.());
-
-    // 1) MULTI-SELECTION MODE
-    if (!isBusy && selectedIds.length > 1) {
-      const bounds =
-        editor.getSelectionPageBounds?.() ??
-        editor.getSelectedPageBounds?.() ??
-        null;
-      if (!bounds) return null;
-
-      const pagePoint = {
-        x: bounds.maxX + 12,
-        y: bounds.minY,
-      };
-      const screenPoint = editor.pageToScreen?.(pagePoint) ?? pagePoint;
-
-      const left = screenPoint.x;
-      const top = screenPoint.y;
-
-      return (
-        <div
-          style={{
-            position: "fixed",
-            left,
-            top,
-            pointerEvents: "none",
-          }}
-        >
-          <button
-            className="tlui-button tlui-button--icon"
-            onClick={(e) => {
-              e.stopPropagation();
-              // null => use current selection
-              onIconClick?.(null);
-            }}
-            style={{
-              pointerEvents: "auto",
-              width: 140,
-              height: 38,
-              borderRadius: 5,
-              background: "white",
-              boxShadow: "0 6px 16px rgba(0,0,0,.2)",
-              display: "grid",
-              placeItems: "center",
-              opacity: 0.9,
-            }}
-            title={`Ask AI about ${selectedIds.length} items`}
-          >
-            <span>
-              <FontAwesomeIcon icon={faRobot} style={{ fontSize: 14 }} /> Ask AI
-              ({selectedIds.length})
-            </span>
-          </button>
-        </div>
-      );
-    }
-
-    // 2) SINGLE-SHAPE HOVER MODE (your original behavior)
-    if (!visibleId || isBusy) return null;
-
-    const isSelected = selectedIds.includes(visibleId);
-    if (isSelected) return null; // keep hiding on single selected shape
-
-    const pageBounds =
-      editor.getShapePageBounds?.(visibleId) ??
-      editor.getPageBounds?.(visibleId) ??
-      null;
-    if (!pageBounds) return null;
-
-    const rightCenterPage = {
-      x: pageBounds.maxX - 20,
-      y: pageBounds.minY,
-    };
-
-    const rightCenterScreen =
-      editor.pageToScreen?.(rightCenterPage) ?? rightCenterPage;
-
-    const left = rightCenterScreen.x + 12;
-    const top = rightCenterScreen.y;
-
-    return (
-      <div
-        style={{
-          position: "fixed",
-          left,
-          top,
-          pointerEvents: "none",
-        }}
-      >
-        <button
-          className="tlui-button tlui-button--icon"
-          onClick={(e) => {
-            e.stopPropagation();
-            editor.setSelectedShapes?.([visibleId]);
-            onIconClick?.(visibleId);
-          }}
-          style={{
-            pointerEvents: "auto",
-            width: 120,
-            height: 38,
-            borderRadius: 5,
-            background: "white",
-            boxShadow: "0 6px 16px rgba(0,0,0,.2)",
-            display: "grid",
-            placeItems: "center",
-            opacity: 0.8,
-          }}
-          title="Quick Ask AI"
-        >
-          <span>
-            <FontAwesomeIcon icon={faRobot} style={{ fontSize: 14 }} /> Ask AI
-          </span>
-        </button>
-      </div>
-    );
-  };
-
-  // const handlePhaseNudgeClick = useCallback(
-  //   (shapeId) => {
-  //     // Example: assume each nudge message looks like:
-  //     // { role: "assistant", type: "nudge", meta: { tailShapeIds: [...] }, content: "..." }
-  //     const related = messages.filter((m) => {
-  //       const ids = m.meta?.tailShapeIds || m.meta?.nudgeForShapeIds || [];
-  //       return Array.isArray(ids) && ids.includes(shapeId);
-  //     });
-
-  //     const last = related[related.length - 1] || null;
-
-  //     setNudgeModal({
-  //       open: true,
-  //       shapeId,
-  //       nudges: last ? [last] : [],
-  //     });
-  //   },
-  //   [messages]
-  // );
-
   const handlePhaseNudgeClick = useCallback((shapeId) => {
     setNudgeFocusShapeId(shapeId);
   }, []);
 
-  function PhaseNudgeBadges({ shapeIds, onClickShape }) {
-    const editor = useEditor();
-    // const camera = useValue("camera", (e) => e.camera);
-    const camera = useValue("camera", () => editor?.getCamera?.() ?? null, [
-      editor,
-    ]);
-    const [badge, setBadge] = useState(null);
-    const [highlight, setHighlight] = useState(false);
+  useEffect(() => {
+    panelCollapsedRef.current = isPanelCollapsed;
+  }, [isPanelCollapsed]);
 
-    // const [positions, setPositions] = useState([]);
+  const togglePanelRef = useRef(togglePanel);
+  useEffect(() => {
+    togglePanelRef.current = togglePanel;
+  }, [togglePanel]);
 
-    useEffect(() => {
-      if (!editor || !Array.isArray(shapeIds) || shapeIds.length === 0) {
-        // setPositions([]);
-        setBadge(null);
-        return;
-      }
+  const shapeReactionsRef = useRef(shapeReactions);
+  useEffect(() => {
+    shapeReactionsRef.current = shapeReactions;
+  }, [shapeReactions]);
 
-      // const next = [];
-      const boundsList = [];
+  const selectedShapeRef = useRef(selectedShape);
+  useEffect(() => {
+    selectedShapeRef.current = selectedShape;
+  }, [selectedShape]);
 
-      shapeIds.forEach((id) => {
-        const bounds =
-          editor.getShapePageBounds?.(id) ?? editor.getPageBounds?.(id) ?? null;
-        if (!bounds) return;
-        boundsList.push({ id, bounds });
-      });
+  const commentCountsRef = useRef(commentCounts);
+  useEffect(() => {
+    commentCountsRef.current = commentCounts;
+  }, [commentCounts]);
 
-      if (!boundsList.length) {
-        setBadge(null);
-        return;
-      }
+  const commentsRef = useRef(comments);
+  useEffect(() => {
+    commentsRef.current = comments;
+  }, [comments]);
 
-      let minX = Infinity,
-        minY = Infinity,
-        maxX = -Infinity,
-        maxY = -Infinity;
+  const actionHistoryRef = useRef(actionHistory);
+  useEffect(() => {
+    actionHistoryRef.current = actionHistory;
+  }, [actionHistory]);
 
-      for (const { bounds } of boundsList) {
-        if (bounds.minX < minX) minX = bounds.minX;
-        if (bounds.minY < minY) minY = bounds.minY;
-        if (bounds.maxX > maxX) maxX = bounds.maxX;
-        if (bounds.maxY > maxY) maxY = bounds.maxY;
-      }
+  const userRoleRef = useRef(userRole);
+  useEffect(() => {
+    userRoleRef.current = userRole;
+  }, [userRole]);
 
-      if (
-        !isFinite(minX) ||
-        !isFinite(minY) ||
-        !isFinite(maxX) ||
-        !isFinite(maxY)
-      ) {
-        setBadge(null);
-        return;
-      }
+  const selectionModeActiveRef = useRef(selectionModeActive);
+  useEffect(() => {
+    selectionModeActiveRef.current = selectionModeActive;
+  }, [selectionModeActive]);
 
-      const cornerPagePoint = {
-        x: maxX + 24, // a bit to the right of the box
-        y: minY, // top edge
-      };
+  const phaseTailShapeIdsRef = useRef(phaseTailShapeIds);
+  useEffect(() => {
+    phaseTailShapeIdsRef.current = phaseTailShapeIds;
+  }, [phaseTailShapeIds]);
 
-      let closestShapeId = boundsList[0].id;
-      let bestDist2 = Infinity;
+  const phaseNudgePreviewRef = useRef(phaseNudgePreview);
+  useEffect(() => {
+    phaseNudgePreviewRef.current = phaseNudgePreview;
+  }, [phaseNudgePreview]);
 
-      for (const { id, bounds } of boundsList) {
-        const cx = (bounds.minX + bounds.maxX) / 2;
-        const cy = (bounds.minY + bounds.maxY) / 2;
-        const dx = cx - cornerPagePoint.x;
-        const dy = cy - cornerPagePoint.y;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < bestDist2) {
-          bestDist2 = d2;
-          closestShapeId = id;
+  const openChatForShapeRef = useRef(openChatForShape);
+  useEffect(() => {
+    openChatForShapeRef.current = openChatForShape;
+  }, [openChatForShape]);
+
+  const handlePhaseNudgeClickRef = useRef(handlePhaseNudgeClick);
+  useEffect(() => {
+    handlePhaseNudgeClickRef.current = handlePhaseNudgeClick;
+  }, [handlePhaseNudgeClick]);
+
+  const handleNudgeFromContextMenuRef = useRef(handleNudgeFromContextMenu);
+  useEffect(() => {
+    handleNudgeFromContextMenuRef.current = handleNudgeFromContextMenu;
+  }, [handleNudgeFromContextMenu]);
+
+  const addCommentRef = useRef(addComment);
+  useEffect(() => {
+    addCommentRef.current = addComment;
+  }, [addComment]);
+
+  const fetchActionHistoryRef = useRef(fetchActionHistory);
+  useEffect(() => {
+    fetchActionHistoryRef.current = fetchActionHistory;
+  }, [fetchActionHistory]);
+
+  // room meta & helpers used inside InFront components
+  const roomMetaRef = useRef({ className, projectName, teamName });
+  useEffect(() => {
+    roomMetaRef.current = { className, projectName, teamName };
+  }, [className, projectName, teamName]);
+
+  const upsertImageUrlRef = useRef(upsertImageUrl);
+  useEffect(() => {
+    upsertImageUrlRef.current = upsertImageUrl;
+  }, [upsertImageUrl]);
+
+  // Navigation panel data
+  const actorOptionsRef = useRef(actorOptions);
+  useEffect(() => {
+    actorOptionsRef.current = actorOptions;
+  }, [actorOptions]);
+
+  const shapeActorIdByShapeIdRef = useRef(shapeActorIdByShapeId);
+  useEffect(() => {
+    shapeActorIdByShapeIdRef.current = shapeActorIdByShapeId;
+  }, [shapeActorIdByShapeId]);
+
+  // Recording UI bits (avoid re-creating Toolbar component)
+  const elapsedRef = useRef(elapsed);
+  useEffect(() => {
+    elapsedRef.current = elapsed;
+  }, [elapsed]);
+
+  const analyzeFn = useCallback(
+    async ({ source, signal }) => {
+      // ✅ Global cooldown (auto only)
+      if (source === "proactive") {
+        const now = Date.now();
+        if (now < autoGlobalCooldownUntilRef.current) {
+          // Return a "no-op" result that normalizeAnalyzeResponse will treat as no trigger
+          return { trigger: null, skipped: "global_cooldown" };
         }
       }
 
-      const screenPoint =
-        editor.pageToScreen?.(cornerPagePoint) ?? cornerPagePoint;
+      const payload = {
+        canvasId: `${className}_${projectName}_${teamName}`,
+        shapes: shapesForAnalysis || [],
+        source,
+      };
 
-      setBadge({
-        shapeId: closestShapeId,
-        left: screenPoint.x,
-        top: screenPoint.y,
+      const res = await fetch("http://192.168.0.241:8060/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal,
       });
 
-      //   // Left-center of the shape in page coords
-      //   const pagePoint = {
-      //     x: bounds.minX - 24, // a bit to the left
-      //     y: (bounds.minY + bounds.maxY) / 2,
-      //   };
+      if (!res.ok) {
+        throw new Error(`/analyze failed: ${res.status}`);
+      }
+      return await res.json();
+    },
+    [className, projectName, teamName, shapesForAnalysis]
+  );
 
-      //   const screenPoint = editor.pageToScreen?.(pagePoint) ?? pagePoint;
+  // function normalizeAnalyzeResponse(data) {
+  //   const triggerObj = data?.trigger || null;
 
-      //   next.push({
-      //     shapeId: id,
-      //     left: screenPoint.x,
-      //     top: screenPoint.y,
-      //   });
-      // });
+  //   const tailShapeIdsRaw =
+  //     data?.tail_shape_ids ?? data?.tailShapeIds ?? data?.tail_shape_ids ?? [];
 
-      // setPositions(next);
-      setHighlight(true);
-      const t = setTimeout(() => setHighlight(false), 4000); // 4s bounce then calm
-      return () => clearTimeout(t);
-    }, [editor, shapeIds, camera]);
+  //   const tailShapeIds = (
+  //     Array.isArray(tailShapeIdsRaw) ? tailShapeIdsRaw : []
+  //   ).map((id) => (id?.startsWith("shape:") ? id : `shape:${id}`));
 
-    // if (!positions.length) return null;
-    if (!badge) return null;
+  //   return {
+  //     tailShapeIds,
+  //     currentPhase: data?.current_phase ?? data?.currentPhase ?? null,
+  //     triggerId: triggerObj?.id ?? data?.triggerId ?? null,
+  //     nudgeText: triggerObj?.user_text ?? data?.nudgeText ?? "",
+  //     chips: triggerObj?.chips ?? data?.chips ?? [],
+  //     role: triggerObj?.role ?? data?.role ?? null,
+  //     label: triggerObj?.label ?? data?.label ?? null,
+  //   };
+  // }
 
-    return (
-      <>
-        {/* {positions.map((p) => ( */}
-        <div
-          // key={p.shapeId}
-          style={{
-            position: "fixed",
-            left: badge.left,
-            top: badge.top,
-            pointerEvents: "none",
-            zIndex: 10050,
-          }}
-        >
-          <button
-            className={
-              "tlui-button tlui-button--icon phase-nudge-badge" +
-              (highlight ? " phase-nudge-badge--bounce" : "")
-            }
-            style={{
-              pointerEvents: "auto",
-              width: 32,
-              height: 32,
-              borderRadius: "999px",
-              background: "white",
-              boxShadow: "0 4px 12px rgba(0,0,0,.2)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="View AI nudge for this recent activity"
-            onClick={(e) => {
-              e.stopPropagation();
-              onClickShape?.(badge.shapeId);
-            }}
-          >
-            <FontAwesomeIcon icon={faRobot} style={{ fontSize: 14 }} />
-          </button>
-        </div>
-      </>
-    );
+  function normalizeAnalyzeResponse(data) {
+    const trigger = data?.trigger || null;
+
+    const tailShapeIdsRaw =
+      data?.tail_shape_ids ?? data?.tailShapeIds ?? data?.tail_shape_ids ?? [];
+
+    const tailShapeIds = (
+      Array.isArray(tailShapeIdsRaw) ? tailShapeIdsRaw : []
+    ).map((id) => (id?.startsWith("shape:") ? id : `shape:${id}`));
+
+    const metrics = data?.current_phase ?? data?.currentPhase ?? null;
+
+    return {
+      tailShapeIds,
+      metrics,
+      trigger, // ✅ keep full trigger object (user_text, chips, role, dedupe_key, id, ...)
+    };
   }
+  // const pushNudgeToChatbot = useCallback(
+  //   ({
+  //     source,
+  //     tailShapeIds,
+  //     metrics,
+  //     trigger,
+  //     nudgeText,
+  //     chips,
+  //     triggerId,
+  //   }) => {
+  //     if (!trigger || !trigger.id) return;
+  //     // keep your existing UI updates
+  //     setPhaseTailShapeIds(tailShapeIds || []);
+  //     setCurrentPhaseDetail(metrics || null);
+
+  //     const phaseName =
+  //       metrics?.current_phase_dc || metrics?.current_phase_full || null;
+
+  //     setCurrentPhaseName(phaseName);
+  //     setPhaseNudgePreview((trigger?.user_text || nudgeText || "").trim());
+  //     setIsPhasePulsing(true);
+
+  //     // robot animation
+  //     const finalTriggerId = trigger?.id || triggerId || null;
+  //     if (finalTriggerId) playTriggerAnimation(finalTriggerId);
+
+  //     // ✅ dispatch (paste the dispatch block from step 2 here)
+  //     window.dispatchEvent(
+  //       new CustomEvent("trigger-chatbot", {
+  //         detail: {
+  //           text: (trigger?.user_text || nudgeText || "").trim(),
+  //           chips: Array.isArray(trigger?.chips)
+  //             ? trigger.chips
+  //             : Array.isArray(chips)
+  //             ? chips
+  //             : [],
+  //           role: trigger?.role || null,
+  //           phase: metrics?.current_phase_dc || null,
+  //           meta: {
+  //             trigger: trigger || null,
+  //             dedupe_key: trigger?.dedupe_key || null,
+  //             triggerId: finalTriggerId,
+  //             tailShapeIds: tailShapeIds || [],
+  //             currentPhase: metrics || null,
+  //           },
+  //           source: source === "proactive" ? "auto-nudge" : "button-nudge",
+  //         },
+  //       })
+  //     );
+
+  //     // keep your optional externalMessages if you want (works fine unchanged)
+  //     if ((trigger?.user_text || nudgeText || "").trim()) {
+  //       setExternalMessages((prev) => [
+  //         ...prev,
+  //         {
+  //           role: "assistant",
+  //           type: "nudge",
+  //           content: (trigger?.user_text || nudgeText || "").trim(),
+  //           meta: {
+  //             source,
+  //             tailShapeIds: tailShapeIds || [],
+  //             currentPhase: metrics || null,
+  //             triggerId: finalTriggerId,
+  //             chips: Array.isArray(trigger?.chips)
+  //               ? trigger.chips
+  //               : chips || [],
+  //             dedupe_key: trigger?.dedupe_key || null,
+  //           },
+  //         },
+  //       ]);
+  //     }
+  //   },
+  //   [playTriggerAnimation]
+  // );
+
+  const pushNudgeToChatbot = useCallback(
+    ({ source, tailShapeIds, metrics, trigger }) => {
+      // 1) If no real trigger, do nothing
+      if (!trigger || !trigger.id) return;
+
+      const text = (trigger?.user_text || "").trim();
+      const chips = Array.isArray(trigger?.chips) ? trigger.chips : [];
+
+      // 2) Update parent UI state (badges / background / robot) ONLY if trigger exists
+      setPhaseTailShapeIds(tailShapeIds || []);
+      setCurrentPhaseDetail(metrics || null);
+
+      const phaseName =
+        metrics?.current_phase_dc || metrics?.current_phase_full || null;
+
+      // If phase is missing, don't overwrite with null (prevents “Predicted Phase:” blank)
+      if (phaseName) setCurrentPhaseName(phaseName);
+
+      setPhaseNudgePreview(text);
+      setIsPhasePulsing(true);
+
+      playTriggerAnimation(trigger.id);
+
+      // if (source === "proactive" && text) {
+      //   window.dispatchEvent(
+      //     new CustomEvent("trigger-chatbot", {
+      //       detail: {
+      //         text,
+      //         chips,
+      //         role: trigger?.role || null,
+      //         phase: metrics?.current_phase_dc || null,
+      //         meta: {
+      //           trigger,
+      //           dedupe_key: trigger?.dedupe_key || null,
+      //           triggerId: trigger.id,
+      //           tailShapeIds: tailShapeIds || [],
+      //           currentPhase: metrics || null,
+      //         },
+      //         source: "auto-nudge",
+      //       },
+      //     })
+      //   );
+      // }
+      // 3) ✅ AUTO nudge cooldowns
+      if (source === "proactive" && text) {
+        const now = Date.now();
+
+        // Same-trigger cooldown
+        const lastAt = autoTriggerCooldownMapRef.current[trigger.id] || 0;
+        if (now - lastAt < NUDGE_COOLDOWN_MS) {
+          // don't emit the same trigger again yet
+          return;
+        }
+
+        // ✅ mark emitted times
+        autoTriggerCooldownMapRef.current[trigger.id] = now;
+        autoGlobalCooldownUntilRef.current = now + NUDGE_COOLDOWN_MS;
+
+        window.dispatchEvent(
+          new CustomEvent("trigger-chatbot", {
+            detail: {
+              text,
+              chips,
+              role: trigger?.role || null,
+              phase: metrics?.current_phase_dc || null,
+              meta: {
+                trigger,
+                dedupe_key: trigger?.dedupe_key || null,
+                triggerId: trigger.id,
+                tailShapeIds: tailShapeIds || [],
+                currentPhase: metrics || null,
+              },
+              source: "auto-nudge",
+            },
+          })
+        );
+      }
+
+      // if (source === "proactive" && text) {
+      //   setExternalMessages((prev) => [
+      //     ...prev,
+      //     { role: "assistant", type: "nudge", content: text, meta: { triggerId: trigger.id } },
+      //   ]);
+      // }
+    },
+    [playTriggerAnimation]
+  );
+
+  const onProactiveResult = useCallback(
+    (raw) => {
+      const data = normalizeAnalyzeResponse(raw);
+
+      const trigger = data?.trigger || null;
+      if (!trigger || !trigger.id) {
+        // revertRobotToDefault();
+        return;
+      }
+
+      pushNudgeToChatbot({
+        source: "proactive",
+        tailShapeIds: data.tailShapeIds,
+        metrics: data.metrics,
+        trigger: data.trigger,
+        nudgeText: data.trigger?.user_text || "",
+        chips: data.trigger?.chips || [],
+        triggerId: data.trigger?.id || null,
+      });
+    },
+    [pushNudgeToChatbot]
+  );
+
+  //   const pushNudgeToChatbot = useCallback(
+  //     ({ source, tailShapeIds, currentPhase, triggerId, nudgeText, chips }) => {
+  //       // 1) Update parent UI state (same as you already do)
+  //       setPhaseTailShapeIds(tailShapeIds || []);
+  //       setCurrentPhaseDetail(currentPhase || null);
+
+  //       const phaseName =
+  //         currentPhase?.current_phase_dc ||
+  //         currentPhase?.current_phase_full ||
+  //         null;
+
+  //       setCurrentPhaseName(phaseName);
+  //       setPhaseNudgePreview(nudgeText || "");
+  //       setIsPhasePulsing(true);
+
+  //       // 2) Robot animation
+  //       if (triggerId) playTriggerAnimation(triggerId);
+
+  //       // 3) IMPORTANT: send a structured event to ChatBot (same “bolt style”)
+  //       // window.dispatchEvent(
+  //       //   new CustomEvent("trigger-chatbot", {
+  //       //     detail: {
+  //       //       type: "nudge",
+  //       //       source, // "proactive" or "button"
+  //       //       tailShapeIds: tailShapeIds || [],
+  //       //       currentPhase: currentPhase || null,
+  //       //       triggerId: triggerId || null,
+  //       //       nudgeText: nudgeText || "",
+  //       //       chips: Array.isArray(chips) ? chips : [],
+  //       //     },
+  //       //   })
+  //       // );
+
+  //       // 3) IMPORTANT: send a structured event to ChatBot (your requested payload)
+  // window.dispatchEvent(
+  //   new CustomEvent("trigger-chatbot", {
+  //     detail: {
+  //       text: (trigger?.user_text || nudgeText || "").trim(), // ✅ actual nudge message
+  //       chips: Array.isArray(trigger?.chips) ? trigger.chips : Array.isArray(chips) ? chips : [],
+  //       role: trigger?.role || null, // ✅ provocateur/communicator
+  //       phase: metrics?.current_phase_dc || null, // optional
+  //       meta: {
+  //         trigger: trigger || null, // ✅ includes user_text, chips, role
+  //         dedupe_key: trigger?.dedupe_key || null, // ✅ backend dedupe
+  //         triggerId: trigger?.id || triggerId || null,
+  //         tailShapeIds: tailShapeIds || [],
+  //         currentPhase: metrics || null,
+  //       },
+  //       source: source === "proactive" ? "auto-nudge" : "button-nudge",
+  //     },
+  //   })
+  // );
+
+  //       // 4) OPTIONAL: also push into externalMessages if you want it to appear even
+  //       // if ChatBot doesn't listen to trigger-chatbot
+  //       if ((nudgeText || "").trim()) {
+  //         setExternalMessages((prev) => [
+  //           ...prev,
+  //           {
+  //             role: "assistant",
+  //             type: "nudge",
+  //             content: nudgeText,
+  //             meta: {
+  //               source,
+  //               tailShapeIds: tailShapeIds || [],
+  //               currentPhase: currentPhase || null,
+  //               triggerId: triggerId || null,
+  //               chips: Array.isArray(chips) ? chips : [],
+  //             },
+  //           },
+  //         ]);
+  //       }
+  //     },
+  //     [playTriggerAnimation]
+  //   );
+
+  // const onProactiveResult = useCallback(
+  //   (raw) => {
+  //     const data = normalizeAnalyzeResponse(raw);
+
+  //     pushNudgeToChatbot({
+  //       source: "proactive",
+  //       tailShapeIds: data.tailShapeIds,
+  //       currentPhase: data.currentPhase,
+  //       triggerId: data.triggerId,
+  //       nudgeText: data.nudgeText,
+  //       chips: data.chips,
+  //     });
+  //   },
+  //   [pushNudgeToChatbot]
+  // );
+
+  // const onProactiveResult = useCallback(
+  //   (raw) => {
+  //     const data = normalizeAnalyzeResponse(raw);
+
+  //     setPhaseTailShapeIds(data.tailShapeIds);
+  //     setCurrentPhaseDetail(data.currentPhase);
+
+  //     const phaseName =
+  //       data.currentPhase?.current_phase_dc ||
+  //       data.currentPhase?.current_phase_full ||
+  //       null;
+
+  //     setCurrentPhaseName(phaseName);
+  //     setPhaseNudgePreview(data.nudgeText);
+
+  //     setIsPhasePulsing(true);
+
+  //     if (data.triggerId) playTriggerAnimation(data.triggerId);
+
+  //     if (data.nudgeText?.trim()) {
+  //       setExternalMessages((prev) => [
+  //         ...prev,
+  //         {
+  //           role: "assistant",
+  //           type: "nudge",
+  //           content: data.nudgeText,
+  //           meta: {
+  //             source: "proactive",
+  //             tailShapeIds: data.tailShapeIds,
+  //             currentPhase: data.currentPhase,
+  //             triggerId: data.triggerId,
+  //             chips: data.chips,
+  //           },
+  //         },
+  //       ]);
+  //     }
+  //   },
+  //   [playTriggerAnimation]
+  // );
+
+  const { requestAnalyze } = useProactiveNudges({
+    editorRef: editorInstance,
+    editorReady,
+    enabled: true,
+
+    analyzeFn,
+    onResult: onProactiveResult,
+    onError: (e) => console.log("[Proactive] analyze error", e),
+
+    idleDebounceMs: 3000,
+    minGapMs: 10000,
+    maxWaitMs: 30000,
+    minEvents: 4,
+  });
+
+  // --- Proactive analyze trigger (bolt-like, but automatic) ---
+  const proactiveRef = useRef({
+    eventCount: 0,
+    firstEventAt: 0,
+    lastAnalyzeAt: 0,
+    idleTimer: null,
+    forceTimer: null,
+    inFlight: null, // AbortController
+  });
 
   function ToolbarComp(props) {
     // read editor & any global UI state here via hooks/refs/context as needed
@@ -1250,306 +2187,547 @@ const CollaborativeWhiteboard = () => {
     []
   );
 
-  const tldrawComponents = useMemo(
-    () => ({
-      ContextMenu: (props) => {
-        const editor = useEditor();
-        const selection = useValue(
-          "selection summary",
-          // setSelectedTargets(selection.ids),
-          () => makeSelectionSummary(editor),
-          [editor]
-        );
-        useEffect(() => {
-          setSelectedTargets(selection.ids);
-        }, [selection.ids]);
-        return (
-          <CustomContextMenu
-            {...props}
-            selection={selection}
-            shapeReactions={shapeReactions}
-            setShapeReactions={setShapeReactions}
-            selectedShape={selectedShape}
-            setSelectedShape={setSelectedShape}
-            commentCounts={commentCounts}
-            setCommentCounts={setCommentCounts}
-            comments={comments}
-            setComments={setComments}
-            actionHistory={actionHistory}
-            setActionHistory={setActionHistory}
-            onNudge={handleNudgeFromContextMenu}
-            onTargetsChange={setSelectedTargets}
-            isPanelCollapsed={isPanelCollapsed}
-            togglePanel={togglePanel}
-          />
-        );
-      },
-      InFrontOfTheCanvas: (props) => (
+  const tldrawComponents = useMemo(() => {
+    const ContextMenu = (props) => {
+      const editor = useEditor();
+
+      const selectedIds = useValue(
+        "selected ids",
+        () => editor.getSelectedShapeIds(),
+        [editor]
+      );
+
+      const selectedKey = useMemo(() => selectedIds.join("|"), [selectedIds]);
+
+      const selection = useMemo(() => {
+        if (!selectedIds.length) {
+          return { ids: [], summaries: [], primary: null, bounds: null };
+        }
+        return makeSelectionSummary(editor);
+      }, [editor, selectedKey]);
+
+      // NOTE: setters are stable; safe to call directly
+      useEffect(() => {
+        setSelectedTargets(selection.ids);
+      }, [selection.ids]);
+
+      return (
+        <CustomContextMenu
+          {...props}
+          selection={selection}
+          shapeReactions={shapeReactionsRef.current}
+          setShapeReactions={setShapeReactions}
+          selectedShape={selectedShapeRef.current}
+          setSelectedShape={setSelectedShape}
+          commentCounts={commentCountsRef.current}
+          setCommentCounts={setCommentCounts}
+          comments={commentsRef.current}
+          setComments={setComments}
+          actionHistory={actionHistoryRef.current}
+          setActionHistory={setActionHistory}
+          onNudge={(msg) => handleNudgeFromContextMenuRef.current?.(msg)}
+          onTargetsChange={setSelectedTargets}
+          isPanelCollapsed={panelCollapsedRef.current}
+          togglePanel={() => togglePanelRef.current?.()}
+        />
+      );
+    };
+
+    const InFrontOfTheCanvas = (props) => {
+      return (
         <>
-          <SelectionLogger />
+          <SelectionLogger
+            selectionModeActive={selectionModeActiveRef.current}
+            roomMeta={roomMetaRef.current}
+            upsertImageUrlFn={upsertImageUrlRef.current}
+          />
+
           <ContextToolbarComponent
             {...props}
-            userRole={userRole}
-            selectedShape={selectedShape}
+            userRole={userRoleRef.current}
+            selectedShape={selectedShapeRef.current}
             setShapeReactions={setShapeReactions}
-            shapeReactions={shapeReactions}
-            commentCounts={commentCounts}
-            addComment={addComment}
+            shapeReactions={shapeReactionsRef.current}
+            commentCounts={commentCountsRef.current}
+            addComment={(shapeId, data) =>
+              addCommentRef.current?.(shapeId, data)
+            }
             setActionHistory={setActionHistory}
-            fetchActionHistory={fetchActionHistory}
+            fetchActionHistory={() => fetchActionHistoryRef.current?.()}
           />
-          <HoverActionBadge onIconClick={openChatForShape} />
+
+          <HoverActionBadge
+            onIconClick={(shapeId) => openChatForShapeRef.current?.(shapeId)}
+          />
+
           <PhaseNudgeBadges
-            shapeIds={phaseTailShapeIds}
-            // onClickShape={openChatForShape}
-            onClickShape={handlePhaseNudgeClick}
+            shapeIds={phaseTailShapeIdsRef.current}
+            onClickShape={(shapeId) =>
+              handlePhaseNudgeClickRef.current?.(shapeId)
+            }
+            previewText={phaseNudgePreviewRef.current}
           />
         </>
-      ),
+      );
+    };
 
-      Toolbar: (props) => {
-        const editor = useEditor();
-        const tools = useTools();
-        const micTool = tools["microphone"];
-        const isMicSelected = useIsToolSelected(tools["microphone"]);
-        return (
-          <DefaultToolbar {...props}>
-            <button
-              type="button"
-              // onClick={() => micTool?.onSelect?.()}
-              className="tlui-button tlui-button--icon"
-              aria-pressed={isMicSelected}
-              // title="Record"
-              title={
-                isRecording
-                  ? `Stop recording • ${elapsed} / ${formatMs(
-                      30000
-                    )} (auto-stops at ${formatMs(30000)})`
-                  : `Record (auto-stops at ${formatMs(30000)})`
+    const Toolbar = (props) => {
+      const editor = useEditor();
+      const tools = useTools();
+      const isMicSelected = useIsToolSelected(tools["microphone"]);
+
+      return (
+        <DefaultToolbar {...props}>
+          <button
+            type="button"
+            className="tlui-button tlui-button--icon"
+            aria-pressed={isMicSelected}
+            title={
+              isRecordingRef.current
+                ? `Stop recording • ${elapsedRef.current} / ${formatMs(
+                    30000
+                  )} (auto-stops at ${formatMs(30000)})`
+                : `Record (auto-stops at ${formatMs(30000)})`
+            }
+            style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+            onClick={async () => {
+              if (!isRecordingRef.current) {
+                await startRecordingRef.current?.();
+              } else {
+                await stopRecordingRef.current?.(editor);
               }
-              style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
-              // disabled={isRecording}
-              onClick={async () => {
-                if (!isRecording) {
-                  startRecording();
-                } else {
-                  await stopRecording(editor);
-                }
-              }}
-            >
-              {isRecording ? (
-                <>
-                  <FontAwesomeIcon
-                    icon={faCircleStop}
-                    style={{ color: "red", fontSize: 14 }}
-                  />
-                  <span
-                    style={{
-                      fontFamily: "monospace",
-                      fontVariantNumeric: "tabular-nums",
-                    }}
-                  >
-                    {elapsed}/{formatMs(30000)}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <FontAwesomeIcon
-                    icon={faMicrophone}
-                    style={{ fontSize: 16 }}
-                  />
-                </>
-              )}
-            </button>
-            <DefaultToolbarContent />
-          </DefaultToolbar>
-        );
-      },
-      ActionsMenu: (props) => <CustomActionsMenu {...props} />,
-    }),
-    [
-      shapeReactions,
-      selectedShape,
-      commentCounts,
-      comments,
-      actionHistory,
-      userRole,
-      handleNudgeFromContextMenu,
-      addComment,
-      setActionHistory,
-      fetchActionHistory,
-      // toggleSidebar,
-      isRecording,
-      elapsed,
-      isPanelCollapsed,
-      // togglePanel,
-      // phaseTailShapeIds,
-      handlePhaseNudgeClick,
-    ]
-  );
+            }}
+          >
+            {isRecordingRef.current ? (
+              <>
+                <FontAwesomeIcon
+                  icon={faCircleStop}
+                  style={{ color: "red", fontSize: 14 }}
+                />
+                <span
+                  style={{
+                    fontFamily: "monospace",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {elapsedRef.current}/{formatMs(30000)}
+                </span>
+              </>
+            ) : (
+              <FontAwesomeIcon icon={faMicrophone} style={{ fontSize: 16 }} />
+            )}
+          </button>
 
-  function SelectionLogger() {
-    const editor = useEditor();
-    const prevIdsRef = useRef([]);
+          <DefaultToolbarContent />
+        </DefaultToolbar>
+      );
+    };
 
-    const selectedIds = useValue(
-      "selected ids",
-      () => editor.getSelectedShapeIds(),
-      [editor]
+    const ActionsMenu = (props) => <CustomActionsMenu {...props} />;
+
+    const NavigationPanel = (props) => (
+      <CustomNavigationPanel
+        {...props}
+        actorOptions={actorOptionsRef.current}
+        shapeActorIdByShapeId={shapeActorIdByShapeIdRef.current}
+        maxActors={6}
+      />
     );
 
-    useEffect(() => {
-      const editingId = editor.getEditingShapeId?.();
-      if (editingId) {
-        prevIdsRef.current = selectedIds;
-        return;
-      }
+    return {
+      ContextMenu,
+      InFrontOfTheCanvas,
+      Toolbar,
+      ActionsMenu,
+      NavigationPanel,
+    };
+  }, []);
 
-      const bounds =
-        editor.getSelectionPageBounds?.() ??
-        editor.getSelectedPageBounds?.() ??
-        null;
+  // const tldrawComponents = useMemo(
+  //   () => ({
+  //     ContextMenu: (props) => {
+  //       const editor = useEditor();
+  //       // const selection = useValue(
+  //       //   "selection summary",
+  //       //   // setSelectedTargets(selection.ids),
+  //       //   () => makeSelectionSummary(editor),
+  //       //   [editor]
+  //       // );
+  //       const selectedIds = useValue(
+  //         "selected ids",
+  //         () => editor.getSelectedShapeIds(),
+  //         [editor]
+  //       );
 
-      if (selectedIds.length === 0) {
-        console.log("[selection] cleared");
-      } else {
-        const rawShapes = selectedIds
-          .map((id) => editor.getShape(id))
-          .filter(Boolean);
+  //       // stable dependency key
+  //       const selectedKey = useMemo(() => selectedIds.join("|"), [selectedIds]);
 
-        const summaries = rawShapes.map((shape) => {
-          const label = (
-            shape.props?.title ??
-            shape.props?.name ??
-            shape.props?.text ??
-            ""
-          )
-            .toString()
-            .slice(0, 60);
+  //       const selection = useMemo(() => {
+  //         if (!selectedIds.length) {
+  //           return { ids: [], summaries: [], primary: null, bounds: null };
+  //         }
+  //         return makeSelectionSummary(editor);
+  //       }, [editor, selectedKey]);
 
-          const url =
-            shape.type === "image" ? resolveImageUrl(editor, shape) : undefined;
+  //       useEffect(() => {
+  //         setSelectedTargets(selection.ids);
+  //       }, [selection.ids]);
+  //       return (
+  //         <CustomContextMenu
+  //           {...props}
+  //           selection={selection}
+  //           shapeReactions={shapeReactions}
+  //           setShapeReactions={setShapeReactions}
+  //           selectedShape={selectedShape}
+  //           setSelectedShape={setSelectedShape}
+  //           commentCounts={commentCounts}
+  //           setCommentCounts={setCommentCounts}
+  //           comments={comments}
+  //           setComments={setComments}
+  //           actionHistory={actionHistory}
+  //           setActionHistory={setActionHistory}
+  //           onNudge={handleNudgeFromContextMenu}
+  //           onTargetsChange={setSelectedTargets}
+  //           isPanelCollapsed={isPanelCollapsed}
+  //           togglePanel={togglePanel}
+  //         />
+  //       );
+  //     },
+  //     InFrontOfTheCanvas: (props) => (
+  //       <>
+  //         {/* <SelectionLogger /> */}
+  //         <SelectionLogger
+  //           selectionModeActive={selectionModeActive}
+  //           roomMeta={{ className, projectName, teamName }}
+  //           upsertImageUrlFn={upsertImageUrl}
+  //         />
+  //         <ContextToolbarComponent
+  //           {...props}
+  //           userRole={userRole}
+  //           selectedShape={selectedShape}
+  //           setShapeReactions={setShapeReactions}
+  //           shapeReactions={shapeReactions}
+  //           commentCounts={commentCounts}
+  //           addComment={addComment}
+  //           setActionHistory={setActionHistory}
+  //           fetchActionHistory={fetchActionHistory}
+  //         />
+  //         <HoverActionBadge onIconClick={openChatForShape} />
+  //         <PhaseNudgeBadges
+  //           shapeIds={phaseTailShapeIds}
+  //           // onClickShape={openChatForShape}
+  //           onClickShape={handlePhaseNudgeClick}
+  //           previewText={phaseNudgePreview}
+  //         />
+  //       </>
+  //     ),
 
-          if (shape.type === "image" && !url) {
-            console.debug("[selection][debug] image without URL", {
-              id: shape.id,
-              props: shape.props,
-            });
-          }
+  //     Toolbar: (props) => {
+  //       const editor = useEditor();
+  //       const tools = useTools();
+  //       const micTool = tools["microphone"];
+  //       const isMicSelected = useIsToolSelected(tools["microphone"]);
+  //       return (
+  //         <DefaultToolbar {...props}>
+  //           <button
+  //             type="button"
+  //             // onClick={() => micTool?.onSelect?.()}
+  //             className="tlui-button tlui-button--icon"
+  //             aria-pressed={isMicSelected}
+  //             // title="Record"
+  //             title={
+  //               isRecording
+  //                 ? `Stop recording • ${elapsed} / ${formatMs(
+  //                     30000
+  //                   )} (auto-stops at ${formatMs(30000)})`
+  //                 : `Record (auto-stops at ${formatMs(30000)})`
+  //             }
+  //             style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+  //             // disabled={isRecording}
+  //             onClick={async () => {
+  //               if (!isRecording) {
+  //                 startRecording();
+  //               } else {
+  //                 await stopRecording(editor);
+  //               }
+  //             }}
+  //           >
+  //             {isRecording ? (
+  //               <>
+  //                 <FontAwesomeIcon
+  //                   icon={faCircleStop}
+  //                   style={{ color: "red", fontSize: 14 }}
+  //                 />
+  //                 <span
+  //                   style={{
+  //                     fontFamily: "monospace",
+  //                     fontVariantNumeric: "tabular-nums",
+  //                   }}
+  //                 >
+  //                   {elapsed}/{formatMs(30000)}
+  //                 </span>
+  //               </>
+  //             ) : (
+  //               <>
+  //                 <FontAwesomeIcon
+  //                   icon={faMicrophone}
+  //                   style={{ fontSize: 16 }}
+  //                 />
+  //               </>
+  //             )}
+  //           </button>
+  //           <DefaultToolbarContent />
+  //         </DefaultToolbar>
+  //       );
+  //     },
+  //     ActionsMenu: (props) => <CustomActionsMenu {...props} />,
+  //     NavigationPanel: (props) => (
+  //       <CustomNavigationPanel
+  //         {...props}
+  //         actorOptions={actorOptions}
+  //         shapeActorIdByShapeId={shapeActorIdByShapeId}
+  //         maxActors={6}
+  //       />
+  //     ),
+  //   }),
+  //   [
+  //     shapeReactions,
+  //     selectedShape,
+  //     commentCounts,
+  //     comments,
+  //     actionHistory,
+  //     userRole,
+  //     handleNudgeFromContextMenu,
+  //     addComment,
+  //     setActionHistory,
+  //     fetchActionHistory,
+  //     // toggleSidebar,
+  //     isRecording,
+  //     elapsed,
+  //     isPanelCollapsed,
+  //     // togglePanel,
+  //     // phaseTailShapeIds,
+  //     handlePhaseNudgeClick,
+  //     sessionActors,
+  //     selectionModeActive,
+  //     phaseTailShapeIds,
+  //     phaseNudgePreview,
+  //     className,
+  //     projectName,
+  //     teamName,
+  //     upsertImageUrl,
+  //     shapeActorIdByShapeId,
+  //     actorOptions,
+  //     openChatForShape,
+  //     handlePhaseNudgeClick,
+  //   ]
+  // );
 
-          if (shape.type === "image" && url && /^https?:\/\//i.test(url)) {
-            const ctx = { className, projectName, teamName };
+  // function SelectionLogger() {
+  //   const editor = useEditor();
+  //   const prevIdsRef = useRef([]);
 
-            // upsertImageUrl should return the final Firebase URL (you can have it
-            // just return `url` if it already is the Firebase URL).
-            upsertImageUrl(ctx, shape.id, url).then((firebaseUrl) => {
-              if (!firebaseUrl) {
-                console.log(
-                  "[FIREBASEURL] firebase url from upsertImage: ",
-                  firebaseUrl
-                );
-                return;
-              }
-              const current = editor.getShape(shape.id);
-              if (!current) return;
+  //   const selectedIds = useValue(
+  //     "selected ids",
+  //     () => editor.getSelectedShapeIds(),
+  //     [editor]
+  //   );
 
-              editor.updateShape({
-                id: current.id,
-                type: "image",
-                props: {
-                  ...current.props,
-                  url: firebaseUrl, // ← your snippet
-                },
-              });
-            });
-          }
+  //   useEffect(() => {
+  //     const editingId = editor.getEditingShapeId?.();
+  //     if (editingId) {
+  //       prevIdsRef.current = selectedIds;
+  //       return;
+  //     }
 
-          return { id: shape.id, type: shape.type, label, url };
-        });
+  //     const bounds =
+  //       editor.getSelectionPageBounds?.() ??
+  //       editor.getSelectedPageBounds?.() ??
+  //       null;
 
-        if (summaries.length === 1) {
-          const s = summaries[0];
-          console.log("[selection] single", {
-            id: s.id,
-            type: s.type,
-            url: s.url,
-            label: s.label,
-            bounds,
-          });
-        } else {
-          console.log("[selection] multi", {
-            ids: summaries.map((s) => s.id),
-            types: summaries.map((s) => s.type),
-            bounds,
-          });
-        }
-      }
+  //     if (selectedIds.length === 0) {
+  //       console.log("[selection] cleared");
+  //     } else {
+  //       const rawShapes = selectedIds
+  //         .map((id) => editor.getShape(id))
+  //         .filter(Boolean);
 
-      // --- NEW: if selection mode is active, send newly selected shapes as clips
-      if (selectionModeActive) {
-        const prev = new Set(prevIdsRef.current);
-        const curr = new Set(selectedIds);
-        const newlySelected = [...curr].filter((id) => !prev.has(id));
+  //       const summaries = rawShapes.map((shape) => {
+  //         const label = (
+  //           shape.props?.title ??
+  //           shape.props?.name ??
+  //           shape.props?.text ??
+  //           ""
+  //         )
+  //           .toString()
+  //           .slice(0, 60);
 
-        if (newlySelected.length) {
-          const clips = newlySelected
-            .map((id) => {
-              const shape = editor.getShape(id);
-              if (!shape) return null;
+  //         const url =
+  //           shape.type === "image" ? resolveImageUrl(editor, shape) : undefined;
 
-              const isImage = shape.type === "image";
-              const url = isImage ? resolveImageUrl(editor, shape) : null;
-              const text = extractShapeText(shape);
+  //         if (shape.type === "image" && !url) {
+  //           console.debug("[selection][debug] image without URL", {
+  //             id: shape.id,
+  //             props: shape.props,
+  //           });
+  //         }
 
-              return {
-                id: shape.id,
-                snip: isImage ? url || "" : text || "",
-                kind: isImage ? "image" : "note",
-              };
-            })
-            .filter(Boolean);
+  //         if (shape.type === "image" && url && /^https?:\/\//i.test(url)) {
+  //           const ctx = { className, projectName, teamName };
 
-          if (clips.length) {
-            window.dispatchEvent(
-              new CustomEvent("chatbot-add-clip", {
-                detail: { clips },
-              })
-            );
-          }
-        }
-      }
+  //           // upsertImageUrl should return the final Firebase URL (you can have it
+  //           // just return `url` if it already is the Firebase URL).
+  //           upsertImageUrl(ctx, shape.id, url).then((firebaseUrl) => {
+  //             if (!firebaseUrl) {
+  //               console.log(
+  //                 "[FIREBASEURL] firebase url from upsertImage: ",
+  //                 firebaseUrl
+  //               );
+  //               return;
+  //             }
+  //             const current = editor.getShape(shape.id);
+  //             if (!current) return;
 
-      prevIdsRef.current = selectedIds;
-    }, [selectedIds, editor, selectionModeActive]);
+  //             editor.updateShape({
+  //               id: current.id,
+  //               type: "image",
+  //               props: {
+  //                 ...current.props,
+  //                 url: firebaseUrl, // ← your snippet
+  //               },
+  //             });
+  //           });
+  //         }
 
-    return null;
-  }
+  //         return { id: shape.id, type: shape.type, label, url };
+  //       });
+
+  //       if (summaries.length === 1) {
+  //         const s = summaries[0];
+  //         console.log("[selection] single", {
+  //           id: s.id,
+  //           type: s.type,
+  //           url: s.url,
+  //           label: s.label,
+  //           bounds,
+  //         });
+  //       } else {
+  //         console.log("[selection] multi", {
+  //           ids: summaries.map((s) => s.id),
+  //           types: summaries.map((s) => s.type),
+  //           bounds,
+  //         });
+  //       }
+  //     }
+
+  //     // --- NEW: if selection mode is active, send newly selected shapes as clips
+  //     if (selectionModeActive) {
+  //       const prev = new Set(prevIdsRef.current);
+  //       const curr = new Set(selectedIds);
+  //       const newlySelected = [...curr].filter((id) => !prev.has(id));
+
+  //       if (newlySelected.length) {
+  //         const clips = newlySelected
+  //           .map((id) => {
+  //             const shape = editor.getShape(id);
+  //             if (!shape) return null;
+
+  //             const isImage = shape.type === "image";
+  //             const url = isImage ? resolveImageUrl(editor, shape) : null;
+  //             const text = extractShapeText(shape);
+
+  //             return {
+  //               id: shape.id,
+  //               snip: isImage ? url || "" : text || "",
+  //               kind: isImage ? "image" : "note",
+  //             };
+  //           })
+  //           .filter(Boolean);
+
+  //         if (clips.length) {
+  //           window.dispatchEvent(
+  //             new CustomEvent("chatbot-add-clip", {
+  //               detail: { clips },
+  //             })
+  //           );
+  //         }
+  //       }
+  //     }
+
+  //     prevIdsRef.current = selectedIds;
+  //   }, [selectedIds, editor, selectionModeActive]);
+
+  //   return null;
+  // }
+
+  const getPhaseClass = () => {
+    if (currentPhaseName === "divergent") {
+      return "phase-divergent";
+    }
+    if (currentPhaseName === "convergent") {
+      return "phase-convergent";
+    }
+    return "phase-neutral";
+  };
+
+  const phaseClass = getPhaseClass();
+
+  // const backgroundColor = getPhaseBackground();
 
   const toolsMemo = useMemo(() => [...defaultTools, ...CUSTOM_TOOLS], []);
 
   if (!roomId) return null;
 
   return (
-    <div className="main-container" style={{ position: "fixed", inset: 0 }}>
+    <>
       <Navbar />
+      <div
+        className={`main-container ${phaseClass} ${
+          isPhasePulsing ? "phase-pulse" : ""
+        }`}
+        style={{ position: "fixed", inset: 0 }}
+      >
+        <Tldraw
+          onMount={(editor) => {
+            console.log("[Canvas] Tldraw onMount fired ✅", {
+              hasEditor: !!editor,
+              hasStore: !!editor?.store,
+              hasListen: !!editor?.store?.listen,
+            });
+            editorInstance.current = editor;
+            console.log("[Canvas] editorInstance.current set ✅", {
+              hasEditorRef: !!editorInstance.current,
+            });
+            setEditorReady(true);
+            // if (editorInstance) {
+            //   saveCanvasPreview();
+            // }
+          }}
+          store={store}
+          // schema={schema}
+          tools={toolsMemo}
+          shapeUtils={SHAPE_UTILS}
+          overrides={uiOverrides}
+          components={tldrawComponents}
+        />
 
-      <Tldraw
-        onMount={(editor) => {
-          editorInstance.current = editor;
-          setEditorReady(true);
-          if (editorInstance) {
-            saveCanvasPreview();
-          }
-        }}
-        store={store}
-        // schema={schema}
-        tools={toolsMemo}
-        shapeUtils={SHAPE_UTILS}
-        overrides={uiOverrides}
-        components={tldrawComponents}
-      />
+        <RobotDock
+          src={robotSrc}
+          loop={robotLoop}
+          // onEnded={!robotLoop ? revertRobotToDefault : null}
+          onEnded={null}
+          phase={robotPhase || currentPhaseName}
+          // phase={currentPhaseName}
+          countdownEndsAt={robotCountdownEndsAt}
+          countdownDurationMs={30000}
+          show={true}
+          // position={{ left: 16, bottom: 158 }}
+          position={robotPosition}
+          size={ROBOT_SIZE}
+          zIndex={10070}
+        />
 
-      {/* <button
+        {/* <button
         onClick={() => setShowViewer((v) => !v)}
         className="tlui-button tlui-button--icon"
         style={{
@@ -1574,7 +2752,7 @@ const CollaborativeWhiteboard = () => {
         />
       )} */}
 
-      {/* <button
+        {/* <button
         onClick={() => setShowMini((v) => !v)}
         className="tlui-button tlui-button--icon"
         style={{
@@ -1603,61 +2781,148 @@ const CollaborativeWhiteboard = () => {
         />
       )} */}
 
-      {!showSidebar && (
-        <ChatBot
-          // toggleSidebar={toggleSidebar}
-          messages={messages}
-          setMessages={setMessages}
-          externalMessages={externalMessages}
-          toggleSidebar={handleToggleSidebar}
-          user_id={
-            auth.currentUser?.displayName || auth.currentUser?.email || "anon"
-          }
-          // canvasId={roomId}
-          canvasId={`${className}_${projectName}_${teamName}`}
-          role={"catalyst"}
-          targets={selectedTargets}
-          params={{}}
-          shapes={shapesForAnalysis}
-          onNudgeComputed={({ tailShapeIds }) => {
-            console.log("[Parent] tailShapeIds from /analyze:", tailShapeIds);
-            setPhaseTailShapeIds(tailShapeIds || []);
-          }}
-          nudgeFocusShapeId={nudgeFocusShapeId}
-          onNudgeFocusComputed={() => setNudgeFocusShapeId(null)}
-          variant="floating"
-        />
-      )}
-      {/* <ChatSidebar
+        {!showSidebar && (
+          <ChatBot
+            // toggleSidebar={toggleSidebar}
+            messages={messages}
+            setMessages={setMessages}
+            externalMessages={externalMessages}
+            toggleSidebar={handleToggleSidebar}
+            user_id={
+              auth.currentUser?.displayName || auth.currentUser?.email || "anon"
+            }
+            // canvasId={roomId}
+            canvasId={`${className}_${projectName}_${teamName}`}
+            role={"catalyst"}
+            targets={selectedTargets}
+            params={{}}
+            shapes={shapesForAnalysis}
+            // onNudgeComputed={({
+            //   tailShapeIds,
+            //   currentPhase,
+            //   source,
+            //   nudgeText,
+            // }) => {
+            //   console.log("[Parent] tailShapeIds from /analyze:", tailShapeIds);
+            //   console.log("[Parent] currentPhase from /analyze:", currentPhase);
+            //   setPhaseTailShapeIds(tailShapeIds || []);
+            //   setCurrentPhaseDetail(currentPhase || null);
+
+            //   const phaseName =
+            //     currentPhase && currentPhase.current_phase_dc
+            //       ? currentPhase.current_phase_dc
+            //       : null;
+
+            //   setCurrentPhaseName(phaseName);
+
+            //   setPhaseNudgePreview(nudgeText || "");
+
+            //   if (source === "button") {
+            //     setIsPhasePulsing(true);
+            //   }
+            // }}
+            // onNudgeComputed={({
+            //   tailShapeIds,
+            //   currentPhase,
+            //   source,
+            //   nudgeText,
+            //   chips,
+            //   triggerId,
+            // }) => {
+            //   pushNudgeToChatbot({
+            //     source: source || "button",
+            //     tailShapeIds,
+            //     currentPhase,
+            //     triggerId,
+            //     nudgeText,
+            //     chips,
+            //   });
+            // }}
+            onNudgeComputed={({
+              tailShapeIds,
+              currentPhase,
+              source,
+              trigger,
+            }) => {
+              // This is a BUTTON nudge; update badges/robot/background only.
+              pushNudgeToChatbot({
+                source: source || "button",
+                tailShapeIds,
+                metrics: currentPhase,
+                trigger, // make sure ChatBot passes the full trigger object here
+              });
+            }}
+            nudgeFocusShapeId={nudgeFocusShapeId}
+            onNudgeFocusComputed={() => setNudgeFocusShapeId(null)}
+            variant="floating"
+            onTriggerFired={(triggerId) => {
+              playTriggerAnimation(triggerId);
+            }}
+          />
+        )}
+        {/* <ChatSidebar
         messages={messages}
         isOpen={isSidebarOpen}
         toggleSidebar={toggleSidebar}
       /> */}
 
-      <ChatSidebar
-        isOpen={showSidebar}
-        onClose={() => setShowSidebar(false)}
-        messages={messages}
-        setMessages={setMessages}
-        canvasId={`${className}_${projectName}_${teamName}`}
-        role="catalyst"
-        user_id={
-          auth.currentUser?.displayName || auth.currentUser?.email || "anon"
-        }
-        targets={selectedTargets}
-        params={{}}
-        shapes={shapesForAnalysis}
-        onNudgeComputed={({ tailShapeIds }) => {
-          console.log(
-            "[Parent] tailShapeIds from /analyze (sidebar):",
-            tailShapeIds
-          );
-          setPhaseTailShapeIds(tailShapeIds || []);
-        }}
-        nudgeFocusShapeId={nudgeFocusShapeId}
-        onNudgeFocusComputed={() => setNudgeFocusShapeId(null)}
-      />
-    </div>
+        <ChatSidebar
+          isOpen={showSidebar}
+          onClose={() => setShowSidebar(false)}
+          messages={messages}
+          setMessages={setMessages}
+          canvasId={`${className}_${projectName}_${teamName}`}
+          role="catalyst"
+          user_id={
+            auth.currentUser?.displayName || auth.currentUser?.email || "anon"
+          }
+          targets={selectedTargets}
+          params={{}}
+          shapes={shapesForAnalysis}
+          onNudgeComputed={({
+            tailShapeIds,
+            currentPhase,
+            source,
+            nudgeText,
+          }) => {
+            console.log(
+              "[Parent] tailShapeIds from /analyze (sidebar):",
+              tailShapeIds
+            );
+            console.log(
+              "[Parent] currentPhase from /analyze (sidebar):",
+              currentPhase
+            );
+
+            setPhaseTailShapeIds(tailShapeIds || []);
+
+            setCurrentPhaseDetail(currentPhase || null);
+
+            // const phaseName =
+            //   tailPhase && tailPhase.current_phase_dc
+            //     ? tailPhase.current_phase_dc
+            //     : null;
+
+            // setCurrentPhaseName(phaseName);
+
+            const phaseName =
+              currentPhase?.current_phase_dc ||
+              currentPhase?.current_phase_full ||
+              null;
+
+            setCurrentPhaseName(phaseName);
+
+            setPhaseNudgePreview(nudgeText || "");
+
+            if (source === "button") {
+              setIsPhasePulsing(true);
+            }
+          }}
+          nudgeFocusShapeId={nudgeFocusShapeId}
+          onNudgeFocusComputed={() => setNudgeFocusShapeId(null)}
+        />
+      </div>
+    </>
   );
 };
 

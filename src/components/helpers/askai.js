@@ -115,8 +115,8 @@ export function makeSelectionSummary(editor) {
       .slice(0, 60),
   }));
 
-  console.log("[makeSelectionSummary] Input shapes:", shapes);
-  console.log("[makeSelectionSummary] Extracted summaries:", summaries);
+  // console.log("[makeSelectionSummary] Input shapes:", shapes);
+  // console.log("[makeSelectionSummary] Extracted summaries:", summaries);
 
   const bounds =
     editor.getSelectionPageBounds?.() ??

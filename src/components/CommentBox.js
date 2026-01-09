@@ -107,7 +107,7 @@ import { getAuth } from "firebase/auth";
 import { AddCommentToShape } from "../utils/firestoreHelpers";
 import { useParams } from "react-router-dom";
 import { Timestamp } from "firebase/firestore";
-import { logAction } from "../utils/registershapes";
+import { logAction } from "../utils/actionLog";
 
 export default function CommentBox({
   selectedShape,

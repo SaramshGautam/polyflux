@@ -1,17 +1,22 @@
-import React from "react";
+import React, { useCallback, useEffect } from "react";
 
 const ToggleExpandButton = ({ isPanelCollapsed, togglePanel }) => {
-  console.log(
-    `[ToggleExpandButton] Rendered — isPanelCollapsed = ${isPanelCollapsed}`
-  );
+  useEffect(() => {
+    console.log("[ToggleExpandButton] MOUNT");
+    return () => console.log("[ToggleExpandButton] UNMOUNT");
+  }, []);
 
-  const handleClick = () => {
-    console.log("[ToggleExpandButton] Toggle button clicked");
+  useEffect(() => {
     console.log(
-      `[ToggleExpandButton] Before toggle → isPanelCollapsed = ${isPanelCollapsed}`
+      "[ToggleExpandButton] isPanelCollapsed changed:",
+      isPanelCollapsed
     );
-    togglePanel(); // parent should update state
-  };
+  }, [isPanelCollapsed]);
+
+  const handleClick = useCallback(() => {
+    console.log("[ToggleExpandButton] Toggle button clicked");
+    togglePanel();
+  }, [togglePanel]);
 
   return (
     <div className="toggle-expand-container">
@@ -20,11 +25,10 @@ const ToggleExpandButton = ({ isPanelCollapsed, togglePanel }) => {
         className={`toggle-expand-button ${
           isPanelCollapsed ? "collapsed" : ""
         }`}
-      ></button>
-
+      />
       <div className="panel-label">History/Comment Panel</div>
     </div>
   );
 };
 
-export default ToggleExpandButton;
+export default React.memo(ToggleExpandButton);

@@ -43,19 +43,6 @@ const HistoryCommentPanel = ({
     }
   };
 
-  // useEffect(() => {
-  //   const el = scrollRef.current;
-  //   if (el) {
-  //     // Reset scroll position to top when switching views
-  //     el.scrollTop = 0;
-  //     setShowScrollButton(false);
-  //     console.log("Panel mounted/updated:");
-  //     console.log("scrollHeight:", el.scrollHeight);
-  //     console.log("clientHeight:", el.clientHeight);
-  //     console.log("Is scrollable:", el.scrollHeight > el.clientHeight);
-  //   }
-  // }, [isViewingHistory, actionHistory, comments]);
-
   const handleViewChange = (newValue) => {
     setIsViewingHistory(newValue);
     // Reset scroll when switching views
@@ -68,10 +55,8 @@ const HistoryCommentPanel = ({
   };
 
   useEffect(() => {
-    // ensure initial state is correct after data/view changes
     requestAnimationFrame(() => {
       if (scrollRef.current) {
-        // newest at top → start at top
         scrollRef.current.scrollTop = 0;
         handleScroll();
       }

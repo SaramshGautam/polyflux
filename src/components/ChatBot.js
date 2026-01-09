@@ -138,11 +138,11 @@ async function mirrorImageToFirebase(srcUrl, { canvasId, user_id }) {
   const path = `generated/${canvasSafe}/${uidSafe}/${ts}-${baseName}`;
 
   // 3) upload
-  const {
-    ref: sRef,
-    uploadBytes,
-    getDownloadURL,
-  } = await import("firebase/storage"); // already imported higher; left for clarity
+  // const {
+  //   ref: sRef,
+  //   uploadBytes,
+  //   getDownloadURL,
+  // } = await import("firebase/storage"); // already imported higher; left for clarity
   const r = sRef(storage, path);
   await uploadBytes(r, blob, {
     contentType,
@@ -170,6 +170,68 @@ async function mirrorAllImagesToFirebase(urls, ctx) {
   return Promise.all(tasks);
 }
 
+const normKey = (v) =>
+  String(v || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_"); // handles spaces, hyphens
+
+function getNudgeHeader({ phase, triggerId, triggerLabel }) {
+  const p = String(phase || "")
+    .trim()
+    .toLowerCase();
+  const raw = triggerId || triggerLabel || "";
+  const t = normKey(raw);
+
+  // -----------------------
+  // Exact backend triggers
+  // -----------------------
+
+  // Scattered divergence
+  if (t === "scattered_divergence") {
+    if (p === "divergent")
+      return "Ideas are staying too close. Try branching out.";
+    return "Ideas feel clustered. Try exploring a new direction.";
+  }
+
+  // Underexplored / stagnant divergence
+  if (t === "stagnant_divergence" || t.includes("underexplored")) {
+    if (p === "divergent") return "Ideas are repeating. Try a fresh direction.";
+    return "You may be circling the same ideas. Try a new angle.";
+  }
+
+  // Long-running divergence
+  if (t === "long_running_divergence") {
+    return "Lots of ideas, little narrowing. Pick 2–3 to evaluate.";
+  }
+
+  // Early convergence
+  if (t === "early_convergence") {
+    return "You’re narrowing fast. Check for missing alternatives.";
+  }
+
+  // Refinement loop
+  if (t === "refinement_loop") {
+    return "Stuck polishing details. Step back and reassess options.";
+  }
+
+  // Long lull
+  if (t === "long_lull") {
+    return "Momentum dipped. Want a quick next step to restart?";
+  }
+
+  // Participation imbalance
+  if (t === "participation_imbalance_group") {
+    return "One voice is dominating. Invite quieter input.";
+  }
+
+  // -----------------------
+  // Fallback
+  // -----------------------
+  const nicePhase = p ? ` (${p})` : "";
+  return `Noticing a pattern${nicePhase}. Want a quick next step?`;
+}
+
 const ChatBot = ({
   messages,
   setMessages,
@@ -185,6 +247,7 @@ const ChatBot = ({
   nudgeFocusShapeId,
   onNudgeFocusComputed,
   variant = "floating",
+  onTriggerFired,
 }) => {
   const [userInput, setUserInput] = useState("");
   const [isOpen, setIsOpen] = useState(variant === "floating");
@@ -197,8 +260,46 @@ const ChatBot = ({
   });
   const [copiedKey, setCopiedKey] = useState(null);
   const [nudgesLoading, setNudgesLoading] = useState(false);
+  const [phaseTheme, setPhaseTheme] = useState("neutral");
+  const lastExternalTriggerRef = useRef({ key: null, time: 0 });
+  const EXTERNAL_TRIGGER_DEDUPE_MS = 2000;
+
+  // --- Nudge notification control ---
+  const lastNotifiedRef = useRef({
+    triggerId: null,
+    time: 0,
+  });
+
+  const NUDGE_NOTIFY_COOLDOWN_MS = 45_000; // adjust
+
+  const notifyUser = (text) => {
+    // Option A: push a small bot “system” message (simple & reliable)
+    setMessages((prev) => [
+      ...prev,
+      { sender: "bot", text: `🔔 ${text}`, type: "system" },
+    ]);
+
+    // Option B (optional): also dispatch an event if you want a toast in UI somewhere else
+    try {
+      window.dispatchEvent(
+        new CustomEvent("chatbot-nudge-notify", { detail: { text } })
+      );
+    } catch {}
+  };
 
   const nudgeScrollRef = useRef(null);
+
+  const getPhaseTheme = (phase) => {
+    if (!phase) return "neutral";
+    const p = String(phase).toLowerCase();
+
+    if (p === "divergent") return "divergent";
+    if (p === "convergent") return "convergent";
+    if (p === "incubation") return "incubation";
+    if (p === "conflict") return "conflict";
+
+    return "neutral";
+  };
 
   useEffect(() => {
     if (variant === "sidebar") {
@@ -258,33 +359,55 @@ const ChatBot = ({
   useEffect(() => {
     const handleExternalTrigger = (e) => {
       const detail = e.detail || {};
-      const { snippet, source, position, meta } = detail;
+      const {
+        snippet,
+        source,
+        position,
+        meta,
+
+        text, // main message text (optional)
+        chips, // array of chips (optional)
+        role: roleType, // "provocateur" | "communicator" | "catalyst" | "nudge"
+        type, // fallback name if you used "type" in payload
+        phase, // optional
+      } = detail;
 
       setIsOpen(true);
 
       if (position) {
-        setPosition({
-          x: position.x,
-          y: position.y,
-        });
+        setPosition({ x: position.x, y: position.y });
       }
 
-      // Build clip notes:
-      // 1) If we have a structured multi-selection in meta.selection,
-      //    create one clip per selected item.
-      // 2) Otherwise, fall back to a single "summary" clip from snippet.
+      const dedupeKey =
+        meta?.dedupe_key ||
+        meta?.dedupeKey ||
+        meta?.trigger?.dedupe_key ||
+        meta?.trigger?.dedupeKey ||
+        null;
+
+      if (dedupeKey) {
+        const now = Date.now();
+        const last = lastExternalTriggerRef.current || { key: null, time: 0 };
+        if (
+          last.key === dedupeKey &&
+          now - last.time < EXTERNAL_TRIGGER_DEDUPE_MS
+        ) {
+          return; // drop duplicate
+        }
+        lastExternalTriggerRef.current = { key: dedupeKey, time: now };
+      }
+
+      // ---- clip notes logic (keep yours) ----
       setClipNotes((prev) => {
         const next = [...prev];
 
         if (meta?.selection && Array.isArray(meta.selection)) {
           meta.selection.forEach((item) => {
-            const text =
+            const textVal =
               item.text ||
               item.label ||
               (typeof item === "string" ? item : "") ||
               "";
-
-            console.log("[Chatbot] meta.selection item:", item);
 
             next.push({
               id: item.id,
@@ -295,33 +418,161 @@ const ChatBot = ({
                     item.src ||
                     item.downloadUrl ||
                     ""
-                  : text,
-              kind: item.type, // "note", "text", "image", etc.
+                  : textVal,
+              kind: item.type,
             });
           });
         } else if (snippet) {
-          next.push({
-            id: source,
-            snip: snippet,
-            kind: "summary",
-          });
+          next.push({ id: source, snip: snippet, kind: "summary" });
         }
 
         return next;
       });
 
-      // Optional: drop an auto-message summarizing what we captured
-      if (snippet) {
-        const note = `💡 Selection sent to AI:\n${snippet}`;
-        setMessages((prev) => [...prev, { sender: "bot", text: note }]);
+      // ✅ NEW: actually push a message that contains chips
+      // const resolvedType = String(roleType || type || "nudge").toLowerCase();
+      // const resolvedChips = Array.isArray(chips) ? chips : [];
+
+      const resolvedType = String(
+        roleType || type || meta?.role || meta?.trigger?.role || "nudge"
+      ).toLowerCase();
+
+      const resolvedChips =
+        Array.isArray(chips) && chips.length
+          ? chips
+          : Array.isArray(meta?.chips) && meta.chips.length
+          ? meta.chips
+          : Array.isArray(meta?.trigger?.chips) && meta.trigger.chips.length
+          ? meta.trigger.chips
+          : [];
+
+      // choose message text priority: explicit text > snippet note > fallback
+      // const messageText =
+      //   typeof text === "string" && text.trim()
+      //     ? text.trim()
+      //     : snippet
+      //     ? `💡 Selection sent to AI:\n${snippet}`
+      //     : "💡 Selection received.";
+
+      const messageText =
+        (typeof text === "string" && text.trim() ? text.trim() : "") ||
+        (typeof meta?.nudgeText === "string" && meta.nudgeText.trim()
+          ? meta.nudgeText.trim()
+          : "") ||
+        (typeof meta?.trigger?.user_text === "string" &&
+        meta.trigger.user_text.trim()
+          ? meta.trigger.user_text.trim()
+          : "") ||
+        (typeof meta?.trigger?.userText === "string" &&
+        meta.trigger.userText.trim()
+          ? meta.trigger.userText.trim()
+          : "") ||
+        (snippet
+          ? `💡 Selection sent to AI:\n${snippet}`
+          : "💡 Selection received.");
+
+      const resolvedPhase =
+        phase ||
+        meta?.phase ||
+        meta?.trigger?.phase ||
+        meta?.trigger?.current_phase_dc ||
+        meta?.trigger?.current_phase_full ||
+        null;
+
+      if (resolvedPhase) {
+        const theme = getPhaseTheme(resolvedPhase);
+        setPhaseTheme(theme);
       }
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          sender: "bot",
+          text: messageText,
+          type: resolvedType,
+          chips: resolvedChips,
+          meta: {
+            ...(meta || {}),
+            source: source || "trigger-chatbot",
+            phase: resolvedPhase || phase || meta?.phase || null,
+            forceVisible: true,
+          },
+        },
+      ]);
     };
 
     window.addEventListener("trigger-chatbot", handleExternalTrigger);
-    return () => {
+    return () =>
       window.removeEventListener("trigger-chatbot", handleExternalTrigger);
-    };
   }, [setMessages]);
+
+  // useEffect(() => {
+  //   const handleExternalTrigger = (e) => {
+  //     const detail = e.detail || {};
+  //     const { snippet, source, position, meta } = detail;
+
+  //     setIsOpen(true);
+
+  //     if (position) {
+  //       setPosition({
+  //         x: position.x,
+  //         y: position.y,
+  //       });
+  //     }
+
+  //     // Build clip notes:
+  //     // 1) If we have a structured multi-selection in meta.selection,
+  //     //    create one clip per selected item.
+  //     // 2) Otherwise, fall back to a single "summary" clip from snippet.
+  //     setClipNotes((prev) => {
+  //       const next = [...prev];
+
+  //       if (meta?.selection && Array.isArray(meta.selection)) {
+  //         meta.selection.forEach((item) => {
+  //           const text =
+  //             item.text ||
+  //             item.label ||
+  //             (typeof item === "string" ? item : "") ||
+  //             "";
+
+  //           console.log("[Chatbot] meta.selection item:", item);
+
+  //           next.push({
+  //             id: item.id,
+  //             snip:
+  //               item.type === "image"
+  //                 ? item.url ||
+  //                   item.imageUrl ||
+  //                   item.src ||
+  //                   item.downloadUrl ||
+  //                   ""
+  //                 : text,
+  //             kind: item.type, // "note", "text", "image", etc.
+  //           });
+  //         });
+  //       } else if (snippet) {
+  //         next.push({
+  //           id: source,
+  //           snip: snippet,
+  //           kind: "summary",
+  //         });
+  //       }
+
+  //       return next;
+  //     });
+
+  //     // Optional: drop an auto-message summarizing what we captured
+  //     if (snippet) {
+  //       const note = `💡 Selection sent to AI:\n${snippet}`;
+  //       setMessages((prev) => [...prev, { sender: "bot", text: note }]);
+  //     }
+  //   };
+
+  //   window.addEventListener("trigger-chatbot", handleExternalTrigger);
+  //   return () => {
+  //     window.removeEventListener("trigger-chatbot", handleExternalTrigger);
+  //   };
+  // }, [setMessages]);
 
   // const handleChipClick = async (chip, roleType, nudgeMsg) => {
   //   // setUserInput(chip);
@@ -494,6 +745,10 @@ const ChatBot = ({
       nudgeContext = { error: "context_build_failed" };
     }
 
+    const inferredTargets = Array.isArray(nudgeMsg?.meta?.tailShapeIds)
+      ? nudgeMsg.meta.tailShapeIds
+      : [];
+
     console.log("Sending /act payload:", {
       chip,
       canvas_id: canvasId,
@@ -512,6 +767,11 @@ const ChatBot = ({
       { sender: "bot", text: `🔧 Running action: ${chip}` },
     ];
     setMessages(newMessages);
+    setLoading(true);
+
+    const resolvedRole = String(
+      nudgeMsg?.role || nudgeMsg?.type || roleType || "catalyst"
+    ).toLowerCase();
 
     try {
       const response = await fetch(
@@ -522,12 +782,17 @@ const ChatBot = ({
           body: JSON.stringify({
             chip,
             canvas_id: canvasId,
-            role: roleType || "catalyst",
+            role: resolvedRole || roleType || "catalyst",
             user_id,
-            // You *can* still pass explicit targets prop, but backend can also use nudge_context.tailShapeIds
-            targets: targets || [],
+            targets: inferredTargets.length ? inferredTargets : targets || [],
             params: {
               ...(params || {}),
+              // helpful top-level keys
+              phase: nudgeContext?.phase || null,
+              triggerId: nudgeContext?.triggerId || null,
+              tailShapeIds: nudgeContext?.tailShapeIds || [],
+              windowIds: nudgeContext?.windowIds || [],
+              // full context blob
               nudge_context: nudgeContext,
             },
           }),
@@ -569,19 +834,35 @@ const ChatBot = ({
 
       console.log(`Bot Reply (raw):`, result?.output?.[0]?.content);
 
-      const botReply = formatBotReply(
-        result?.outputs?.find((o) => o?.type === "summary")?.content ??
-          result?.output?.[0]?.content ??
-          "Action completed."
-      );
+      // const botReply = formatBotReply(
+      //   result?.outputs?.find((o) => o?.type === "summary")?.content ??
+      //     result?.output?.[0]?.content ??
+      //     "Action completed."
+      // );
+      const primaryOutput =
+        // 1) prefer summary if present
+        // result?.outputs?.find((o) => o?.type === "summary")?.content ??
+        // 2) otherwise take first output content (covers contrarian_ideas, etc.)
+        result?.outputs?.[0]?.content ??
+        // 3) last fallback
+        "Action completed.";
+
+      const botReply = formatBotReply(primaryOutput);
 
       setMessages([
         ...newMessages,
         {
           sender: "bot",
           text: botReply,
-          type: roleType,
+          type: resolvedRole,
           image_urls: firebaseUrls,
+          meta: {
+            phase: nudgeMsg?.meta?.phase || null,
+            source: "act-followup",
+            triggerId: nudgeMsg?.meta?.triggerId || null,
+            forceVisible: true,
+            headerText: chip.length > 60 ? chip.slice(0, 60) + "…" : chip,
+          },
         },
       ]);
     } catch (error) {
@@ -601,19 +882,19 @@ const ChatBot = ({
     inFlight: false,
   });
 
-  useEffect(() => {
-    if (!shapes || shapes.length === 0) return;
+  // useEffect(() => {
+  //   if (!shapes || shapes.length === 0) return;
 
-    const now = Date.now();
-    const last = lastAnalyzeRef.current;
-    const elapsed = last.time ? now - last.time : Infinity;
-    const deltaMoves = shapes.length - (last.moveCount || 0);
+  //   const now = Date.now();
+  //   const last = lastAnalyzeRef.current;
+  //   const elapsed = last.time ? now - last.time : Infinity;
+  //   const deltaMoves = shapes.length - (last.moveCount || 0);
 
-    const shouldCall = elapsed >= 30_000 || deltaMoves >= 8;
-    if (!shouldCall) return;
+  //   const shouldCall = elapsed >= 30_000 || deltaMoves >= 8;
+  //   if (!shouldCall) return;
 
-    runAnalyzeNudge("auto");
-  }, [shapes]);
+  //   runAnalyzeNudge("auto");
+  // }, [shapes]);
 
   const runAnalyzeNudge = async (source = "auto") => {
     if (!shapes || !Array.isArray(shapes) || shapes.length === 0) return;
@@ -656,21 +937,21 @@ const ChatBot = ({
     const episodeId = canvasId || "TeamRoadTrip";
 
     try {
-      // const res = await fetch("http://192.168.1.185:8060/analyze", {
-      const res = await fetch(
-        "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            episode_id: episodeId,
-            shapes: shapes,
-            window_sec: 15,
-            min_link: 0.5,
-            tail_window_count: 6, // ⬅️ match backend default
-          }),
-        }
-      );
+      const res = await fetch("http://192.168.0.241:8060/analyze", {
+        // const res = await fetch("http://167.96.111.150:8060/analyze", {
+        // const res = await fetch(
+        //   "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
+        //   {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          episode_id: episodeId,
+          shapes: shapes,
+          window_sec: 15,
+          min_link: 0.5,
+          tail_window_count: 6, // ⬅️ match backend default
+        }),
+      });
 
       const data = await res.json();
       console.log("[/analyze] response:", data);
@@ -696,6 +977,8 @@ const ChatBot = ({
       const tailShapeIds = Array.isArray(data.tail_shape_ids)
         ? data.tail_shape_ids
         : [];
+
+      console.log("TAIL IDS FROM BACKEND:", tailShapeIds);
 
       if (!windows.length || !current_phase) {
         if (source === "button") {
@@ -776,70 +1059,31 @@ const ChatBot = ({
         ? `I’m pretty sure you’re in a ${phaseNice.toLowerCase()} phase (about ${confPct}% confident).`
         : `It looks like you’re in a ${phaseNice.toLowerCase()} phase.`;
 
-      let nudgeText = "";
-      let chips = [];
-      let nudgeType = "nudge";
+      // let nudgeText = "";
+      // let chips = [];
+      // let nudgeType = "nudge";
 
-      if (phase === "divergent") {
-        nudgeText =
-          "You’re in a brainstorming mode with lots of ideas. This might be a good moment to group related options or ask AI to help contrast a few promising directions.";
-        chips = [
-          "Cluster similar ideas into groups",
-          "Highlight 3 most different ideas",
-        ];
-        nudgeType = "catalyst";
-      } else if (phase === "convergent") {
-        nudgeText =
-          "You’re narrowing things down. It may help to summarize your top options and check if any important constraints or trade-offs are missing.";
-        chips = [
-          "Summarize top 3 options with pros/cons",
-          "Ask for missing constraints or risks",
-        ];
-        nudgeType = "communicator";
-      } else if (phase === "incubation") {
-        nudgeText =
-          "Activity has slowed down a bit. You could step back to scan the board, or ask AI to surface a few overlooked directions to restart the discussion.";
-        chips = [
-          "Scan the board and surface overlooked clusters",
-          "Suggest 2–3 fresh directions from existing notes",
-        ];
-        nudgeType = "catalyst";
-      } else if (phase === "conflict") {
-        nudgeText =
-          "Signals look mixed, as if there are competing ideas. It might help to make disagreements and decision criteria explicit before moving on.";
-        chips = [
-          "List key points of disagreement",
-          "Reframe options in a neutral summary",
-        ];
-        nudgeType = "communicator";
-      } else {
-        nudgeText =
-          "I analyzed your recent activity, but things are a bit noisy. It might help to summarize what you have and decide together what to do next.";
-        chips = [
-          "Summarize what we have so far",
-          "Suggest next step for the group",
-        ];
-        nudgeType = "nudge";
-      }
+      const phaseThemeValue = getPhaseTheme(phase);
+      setPhaseTheme(phaseThemeValue);
 
-      if (trigger && trigger.id) {
-        console.log("[nudge] trigger hit:", trigger.id, trigger);
-        const triggerLabel = trigger.label || trigger.id;
+      // Prefer backend-provided nudge always
+      const backendNudge = data.nudge || null;
 
-        nudgeText =
-          trigger.user_text ||
-          nudgeText ||
-          `Something interesting is happening: ${triggerLabel}. Want help responding to it?`;
+      let nudgeText =
+        backendNudge?.text ||
+        trigger?.user_text ||
+        "I analyzed your recent activity. If you'd like, I can suggest a helpful next step.";
 
-        if (Array.isArray(trigger.chips) && trigger.chips.length) {
-          chips = trigger.chips;
-        }
+      let chips =
+        Array.isArray(backendNudge?.chips) && backendNudge.chips.length
+          ? backendNudge.chips
+          : Array.isArray(trigger?.chips) && trigger.chips.length
+          ? trigger.chips
+          : [];
 
-        // Remember: msg.type controls which agent runs when a chip is clicked
-        if (trigger.role) {
-          nudgeType = trigger.role; // e.g., "provocateur" or "communicator"
-        }
-      }
+      let nudgeType = String(
+        backendNudge?.role || trigger?.role || "nudge"
+      ).toLowerCase();
 
       // 🔗 let parent know which shapes were in the tail windows
       if (typeof onNudgeComputed === "function") {
@@ -850,14 +1094,68 @@ const ChatBot = ({
           trigger,
           metrics,
           source,
+          nudgeText,
+          nudgeType,
+          chips,
+          phase,
+          backendNudge,
         });
+      }
+
+      // --- Decide whether to notify the user ---
+      const nowTs = Date.now();
+      const lastN = lastNotifiedRef.current || { triggerId: null, time: 0 };
+
+      console.log("[trigger] :", trigger);
+
+      const triggerId = trigger?.id || null;
+      console.log("[nudge] triggerId:", triggerId);
+      if (trigger?.id && typeof onTriggerFired === "function") {
+        // props.onTriggerFired(trigger.id);
+        onTriggerFired(trigger.id);
+      }
+      const isTriggerHit = !!triggerId;
+
+      // Notify rules:
+      // - If user clicked the bolt: optional short notice (not necessary, but ok)
+      // - If auto: notify only when a trigger hits AND we haven’t notified recently for same trigger
+      let shouldNotify = false;
+
+      if (source === "button") {
+        // optional: you can skip this since user requested it
+        // shouldNotify = isTriggerHit; // or true if you want always
+        shouldNotify = true; // or true if you want always
+      } else {
+        // auto
+        if (isTriggerHit) {
+          const changedTrigger = triggerId !== lastN.triggerId;
+          const cooldownPassed =
+            nowTs - (lastN.time || 0) > NUDGE_NOTIFY_COOLDOWN_MS;
+
+          if (changedTrigger || cooldownPassed) {
+            shouldNotify = true;
+          }
+        }
+      }
+
+      if (shouldNotify) {
+        lastNotifiedRef.current = { triggerId, time: nowTs };
+
+        // Text for notification
+        const label = trigger?.label || triggerId || "a pattern";
+        // if (shouldNotify && triggerId && typeof onTriggerFired === "function") {
+        //   onTriggerFired(triggerId);
+        // }
+
+        notifyUser(`Nudge triggered: ${label}`);
       }
 
       setMessages((prev) => [
         ...prev,
         {
           sender: "bot",
-          text: `${phaseLine}\n\n${nudgeText}`,
+          // text: `${phaseLine}\n\n${nudgeText}`,
+          text: `\n${nudgeText}`,
           type: nudgeType,
           chips,
           meta: {
@@ -867,6 +1165,8 @@ const ChatBot = ({
             windowIds: current_phase.window_ids || [],
             episodeId,
             triggerId: trigger?.id || null,
+            forceVisible: true,
+            triggerLabel: trigger?.label || backendNudge?.label || null,
           },
         },
       ]);
@@ -1152,6 +1452,12 @@ const ChatBot = ({
     }
   };
 
+  const copySelectedOrAll = async (fallbackText, key) => {
+    const sel = window.getSelection?.()?.toString?.() || "";
+    const textToCopy = sel.trim() ? sel : fallbackText || "";
+    await copyText(textToCopy, key);
+  };
+
   const copyImage = async (url, key) => {
     try {
       let blob;
@@ -1184,7 +1490,7 @@ const ChatBot = ({
 
   const renderInner = () => {
     return (
-      <div className="chatbot-container">
+      <div className={`chatbot-container chatbot-phase-${phaseTheme}`}>
         <div className="chatbot-header chatbot-drag">
           <div className="chatbot-header-left">
             <div className="chatbot-header-icon">
@@ -1260,6 +1566,31 @@ const ChatBot = ({
                 msg.type
               );
 
+            const msgPhase = msg.meta?.phase || null;
+            const msgPhaseTheme = msgPhase
+              ? getPhaseTheme(msgPhase)
+              : "neutral";
+
+            const isPhaseScopedNudge = isNudgeLike && !!msgPhase;
+            const forceVisible = !!msg.meta?.forceVisible;
+
+            const isPhaseVisible =
+              forceVisible ||
+              !isPhaseScopedNudge ||
+              msgPhaseTheme === "neutral" ||
+              msgPhaseTheme === phaseTheme;
+
+            if (!isPhaseVisible) {
+              // Hide this message completely when phase does not match
+              return null;
+            }
+
+            // const isNudgeLike =
+            //   msg.type &&
+            //   ["nudge", "provocateur", "communicator", "catalyst"].includes(
+            //     msg.type
+            //   );
+
             const isExpanded = !isNudgeLike || msg.expanded;
             const lines = toLines(msg.text);
             const preview =
@@ -1302,13 +1633,30 @@ const ChatBot = ({
                     onMouseLeave={() => handleNudgeHover(false)}
                   >
                     <div className="chatbot-nudge-header-left">
-                      <span className="chatbot-nudge-pill">
+                      {/* <span className="chatbot-nudge-pill">
                         AI nudge{" "}
                         {msg.meta?.triggerId ? `· ${msg.meta.triggerId}` : ""}
-                      </span>
-                      {preview && (
+                        Predicted Phase:{" "}
+                        {msg.meta?.phase ? `${msg.meta.phase}` : ""}
+                      </span> */}
+                      {/* {preview && (
                         <span className="chatbot-nudge-preview">{preview}</span>
-                      )}
+                      )} */}
+                      {/* <span className="chatbot-nudge-pill">
+                        {getNudgeHeader({
+                          phase: msg.meta?.phase,
+                          triggerId: msg.meta?.triggerId,
+                          triggerLabel: msg.meta?.triggerLabel,
+                        })}
+                      </span> */}
+                      <span className="chatbot-nudge-pill">
+                        {msg.meta?.headerText ||
+                          getNudgeHeader({
+                            phase: msg.meta?.phase,
+                            triggerId: msg.meta?.triggerId,
+                            triggerLabel: msg.meta?.triggerLabel,
+                          })}
+                      </span>
                     </div>
                     <div className="chatbot-nudge-toggle">
                       {isExpanded ? "Hide" : "Show"}
@@ -1323,8 +1671,14 @@ const ChatBot = ({
                       <button
                         className="chatbot-copy-btn"
                         title="Copy reply"
+                        // onClick={() =>
+                        //   copyText(toLines(msg.text).join("\n"), `msg-${idx}`)
+                        // }
                         onClick={() =>
-                          copyText(toLines(msg.text).join("\n"), `msg-${idx}`)
+                          copySelectedOrAll(
+                            toLines(msg.text).join("\n"),
+                            `msg-${idx}`
+                          )
                         }
                       >
                         <FontAwesomeIcon icon={faCopy} />
@@ -1334,17 +1688,19 @@ const ChatBot = ({
                       <span className="chatbot-copied-pill">Copied</span>
                     )}
 
-                    {toLines(msg.text).map((line, i) => (
-                      <p key={i} style={{ margin: 0 }}>
-                        {line}
-                      </p>
-                    ))}
+                    <div className="chatbot-message-body">
+                      {toLines(msg.text).map((line, i) => (
+                        <p key={i} style={{ margin: 0 }}>
+                          {line}
+                        </p>
+                      ))}
+                    </div>
 
-                    {msg.type && (
+                    {/* {msg.type && (
                       <div className="chatbot-nudge-type">
                         <strong>Type:</strong> {msg.type}
                       </div>
-                    )}
+                    )} */}
 
                     {msg.chips && msg.chips.length > 0 && (
                       <div className="chatbot-nudge-chips">

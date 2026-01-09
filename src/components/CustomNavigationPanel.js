@@ -1,0 +1,611 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEditor, useValue } from "tldraw";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import {
+  faAngleDoubleUp,
+  faAngleDoubleDown,
+} from "@fortawesome/free-solid-svg-icons";
+
+// ---- minimap helpers (keep your existing ones) ----
+function unionBounds(editor, shapeIds) {
+  let bounds = null;
+  for (const id of shapeIds) {
+    const b = editor.getShapePageBounds(id);
+    if (!b) continue;
+    bounds = bounds ? bounds.union(b) : b.clone();
+  }
+  return bounds;
+}
+
+function makePalette() {
+  return [
+    "#93c5fd", // pastel blue
+    "#fdba74", // pastel orange
+    "#86efac", // pastel green
+    "#d8b4fe", // pastel purple
+    "#fca5a5", // pastel red
+    "#7dd3fc", // pastel cyan
+  ];
+}
+
+function buildActorColorMap(actorOptions) {
+  const palette = makePalette();
+  const map = new Map();
+
+  actorOptions.forEach((a, i) => {
+    const actorKey = a.label || a.id;
+    map.set(actorKey, palette[i % palette.length]);
+  });
+
+  return map;
+}
+
+// function drawMinimap({
+//   editor,
+//   canvas,
+//   shapeIds,
+//   shapeActorIdByShapeId,
+//   actorColorByActorId,
+// }) {
+//   if (!canvas) return;
+//   const ctx = canvas.getContext("2d");
+//   if (!ctx) return;
+
+//   const W = canvas.width;
+//   const H = canvas.height;
+//   ctx.clearRect(0, 0, W, H);
+
+//   // ✅ Light background (white / slight gray)
+//   ctx.fillStyle = "#f7f7f8"; // tweak: "#ffffff" if you want pure white
+//   ctx.fillRect(0, 0, W, H);
+
+//   // ✅ subtle border around the minimap
+//   ctx.strokeStyle = "rgba(0,0,0,0.08)";
+//   ctx.lineWidth = 1;
+//   ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+
+//   if (!shapeIds.length) {
+//     ctx.fillStyle = "rgba(0,0,0,0.55)";
+//     ctx.font = "12px system-ui";
+//     ctx.fillText("No shapes for selected participant(s)", 10, 20);
+//     return;
+//   }
+
+//   const contentBounds = unionBounds(editor, shapeIds);
+//   if (!contentBounds) return;
+
+//   const pad = 200;
+//   const worldX = contentBounds.x - pad;
+//   const worldY = contentBounds.y - pad;
+//   const worldW = contentBounds.w + pad * 2;
+//   const worldH = contentBounds.h + pad * 2;
+
+//   const sx = W / worldW;
+//   const sy = H / worldH;
+//   const s = Math.min(sx, sy);
+
+//   const drawW = worldW * s;
+//   const drawH = worldH * s;
+//   const ox = (W - drawW) / 2;
+//   const oy = (H - drawH) / 2;
+
+//   // slightly thicker so participant colors read better
+//   ctx.lineWidth = 1.75;
+
+//   for (const id of shapeIds) {
+//     const b = editor.getShapePageBounds(id);
+//     if (!b) continue;
+
+//     const x = ox + (b.x - worldX) * s;
+//     const y = oy + (b.y - worldY) * s;
+//     const w = Math.max(2, b.w * s);
+//     const h = Math.max(2, b.h * s);
+
+//     const actorId = shapeActorIdByShapeId?.[id] || null;
+//     const color = actorId ? actorColorByActorId.get(actorId) : null;
+
+//     // ✅ per-participant edge color (fallback if unknown)
+//     const stroke = color || "rgba(0,0,0,0.35)";
+//     ctx.strokeStyle = stroke;
+
+//     // ✅ tiny fill tinted by participant color (very light)
+//     if (color) {
+//       ctx.fillStyle = `${color}14`; // light tint on white background
+//       ctx.fillRect(x, y, w, h);
+//     }
+
+//     ctx.strokeRect(x, y, w, h);
+//   }
+
+//   // viewport (keep it visible on light bg)
+//   const vp = editor.getViewportPageBounds?.();
+//   if (vp) {
+//     ctx.strokeStyle = "rgba(0, 140, 255, 0.9)";
+//     ctx.lineWidth = 1.5;
+//     const x = ox + (vp.x - worldX) * s;
+//     const y = oy + (vp.y - worldY) * s;
+//     const w = vp.w * s;
+//     const h = vp.h * s;
+//     ctx.strokeRect(x, y, w, h);
+//   }
+// }
+
+// function drawMinimap({
+//   editor,
+//   canvas,
+//   shapeIds,
+//   shapeActorIdByShapeId,
+//   actorColorByActorId,
+// }) {
+//   if (!canvas) return null;
+//   const ctx = canvas.getContext("2d");
+//   if (!ctx) return null;
+
+//   const W = canvas.width;
+//   const H = canvas.height;
+//   ctx.clearRect(0, 0, W, H);
+
+//   ctx.fillStyle = "#f7f7f8";
+//   ctx.fillRect(0, 0, W, H);
+
+//   ctx.strokeStyle = "rgba(0,0,0,0.08)";
+//   ctx.lineWidth = 1;
+//   ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+
+//   if (!shapeIds.length) {
+//     ctx.fillStyle = "rgba(0,0,0,0.55)";
+//     ctx.font = "12px system-ui";
+//     ctx.fillText("No shapes for selected participant(s)", 10, 20);
+//     return null;
+//   }
+
+//   const contentBounds = unionBounds(editor, shapeIds);
+//   if (!contentBounds) return null;
+
+//   const pad = 200;
+//   const worldX = contentBounds.x - pad;
+//   const worldY = contentBounds.y - pad;
+//   const worldW = contentBounds.w + pad * 2;
+//   const worldH = contentBounds.h + pad * 2;
+
+//   const sx = W / worldW;
+//   const sy = H / worldH;
+//   const s = Math.min(sx, sy);
+
+//   const drawW = worldW * s;
+//   const drawH = worldH * s;
+//   const ox = (W - drawW) / 2;
+//   const oy = (H - drawH) / 2;
+
+//   ctx.lineWidth = 1.75;
+
+//   for (const id of shapeIds) {
+//     const b = editor.getShapePageBounds(id);
+//     if (!b) continue;
+
+//     const x = ox + (b.x - worldX) * s;
+//     const y = oy + (b.y - worldY) * s;
+//     const w = Math.max(2, b.w * s);
+//     const h = Math.max(2, b.h * s);
+
+//     const actorId = shapeActorIdByShapeId?.[id] || null;
+//     const color = actorId ? actorColorByActorId.get(actorId) : null;
+
+//     const stroke = color || "rgba(0,0,0,0.35)";
+//     ctx.strokeStyle = stroke;
+
+//     if (color) {
+//       ctx.fillStyle = `${color}14`;
+//       ctx.fillRect(x, y, w, h);
+//     }
+
+//     ctx.strokeRect(x, y, w, h);
+//   }
+
+//   const vp = editor.getViewportPageBounds?.();
+//   if (vp) {
+//     ctx.strokeStyle = "rgba(0, 140, 255, 0.9)";
+//     ctx.lineWidth = 1.5;
+//     const x = ox + (vp.x - worldX) * s;
+//     const y = oy + (vp.y - worldY) * s;
+//     const w = vp.w * s;
+//     const h = vp.h * s;
+//     ctx.strokeRect(x, y, w, h);
+//   }
+
+//   // ✅ RETURN TRANSFORM so click can map minimap->page
+//   return { worldX, worldY, s, ox, oy, W, H };
+// }
+
+function drawMinimap({
+  editor,
+  canvas,
+  allShapeIds, // ✅ new: used for bounds/scale
+  drawShapeIds, // ✅ new: actually drawn
+  shapeActorIdByShapeId,
+  actorColorByActorId,
+}) {
+  if (!canvas) return null;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.fillStyle = "#f7f7f8";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = "rgba(0,0,0,0.08)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+
+  if (!allShapeIds?.length) return null;
+
+  // ✅ IMPORTANT: bounds from ALL shapes (stable)
+  const contentBounds = unionBounds(editor, allShapeIds);
+  if (!contentBounds) return null;
+
+  const pad = 200;
+  const worldX = contentBounds.x - pad;
+  const worldY = contentBounds.y - pad;
+  const worldW = contentBounds.w + pad * 2;
+  const worldH = contentBounds.h + pad * 2;
+
+  const sx = W / worldW;
+  const sy = H / worldH;
+  const s = Math.min(sx, sy);
+
+  const drawW = worldW * s;
+  const drawH = worldH * s;
+  const ox = (W - drawW) / 2;
+  const oy = (H - drawH) / 2;
+
+  ctx.lineWidth = 1.75;
+
+  // ✅ draw only the filtered subset
+  for (const id of drawShapeIds || []) {
+    const b = editor.getShapePageBounds(id);
+    if (!b) continue;
+
+    const x = ox + (b.x - worldX) * s;
+    const y = oy + (b.y - worldY) * s;
+    const w = Math.max(2, b.w * s);
+    const h = Math.max(2, b.h * s);
+
+    const actorId = shapeActorIdByShapeId?.[id] || null;
+    const color = actorId ? actorColorByActorId.get(actorId) : null;
+
+    ctx.strokeStyle = color || "rgba(0,0,0,0.35)";
+    if (color) {
+      ctx.fillStyle = `${color}14`;
+      ctx.fillRect(x, y, w, h);
+    }
+    ctx.strokeRect(x, y, w, h);
+  }
+
+  // viewport box still works
+  const vp = editor.getViewportPageBounds?.();
+  if (vp) {
+    ctx.strokeStyle = "rgba(0, 140, 255, 0.9)";
+    ctx.lineWidth = 1.5;
+    const x = ox + (vp.x - worldX) * s;
+    const y = oy + (vp.y - worldY) * s;
+    ctx.strokeRect(x, y, vp.w * s, vp.h * s);
+  }
+
+  return { worldX, worldY, s, ox, oy, W, H };
+}
+
+function ActorFilteredMinimap({
+  selectedActorIds,
+  shapeActorIdByShapeId,
+  actorOptions,
+}) {
+  const editor = useEditor();
+  const canvasRef = useRef(null);
+
+  // holds last draw transform for mapping clicks
+  const transformRef = useRef(null);
+
+  const shapes = useValue("shapes", () => editor.getCurrentPageShapes(), [
+    editor,
+  ]);
+
+  const selectedSet = useMemo(
+    () => new Set(selectedActorIds || []),
+    [selectedActorIds]
+  );
+
+  const filteredShapeIds = useMemo(() => {
+    if (!selectedActorIds || selectedActorIds.length === 0) {
+      return shapes.map((s) => s.id);
+    }
+
+    return shapes
+      .map((s) => s.id)
+      .filter((id) => {
+        const actorId = shapeActorIdByShapeId?.[id];
+        return actorId && selectedSet.has(actorId);
+      });
+  }, [shapes, selectedActorIds, selectedSet, shapeActorIdByShapeId]);
+
+  const actorColorByActorId = useMemo(
+    () => buildActorColorMap(actorOptions || []),
+    [actorOptions]
+  );
+
+  const allShapeIds = useMemo(() => shapes.map((s) => s.id), [shapes]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    canvas.width = 367;
+    canvas.height = 176;
+
+    const t = drawMinimap({
+      editor,
+      canvas,
+      allShapeIds, // ✅ stable framing
+      drawShapeIds: filteredShapeIds, // ✅ filtered drawing
+      shapeActorIdByShapeId,
+      actorColorByActorId,
+    });
+
+    transformRef.current = t;
+  }, [
+    editor,
+    allShapeIds,
+    filteredShapeIds,
+    shapeActorIdByShapeId,
+    actorColorByActorId,
+  ]);
+
+  const handlePointerDown = (e) => {
+    e.stopPropagation();
+
+    const canvas = canvasRef.current;
+    const t = transformRef.current;
+    if (!canvas || !t) return;
+
+    const rect = canvas.getBoundingClientRect();
+
+    // convert CSS pixels -> canvas pixels
+    const cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+    // canvas -> page coords using inverse transform
+    const pageX = t.worldX + (cx - t.ox) / t.s;
+    const pageY = t.worldY + (cy - t.oy) / t.s;
+
+    // ✅ center camera on that page point
+    // Use viewport bounds to compute current center and shift camera by delta.
+    const vp = editor.getViewportPageBounds?.();
+    const cam = editor.getCamera?.();
+    if (!vp || !cam) return;
+
+    const currentCenter = {
+      x: vp.x + vp.w / 2,
+      y: vp.y + vp.h / 2,
+    };
+
+    const dx = pageX - currentCenter.x;
+    const dy = pageY - currentCenter.y;
+
+    // This sign works for tldraw's camera in most setups:
+    editor.setCamera({ x: cam.x - dx, y: cam.y - dy, z: cam.z });
+  };
+
+  return (
+    <div className="tlui-minimap">
+      <canvas
+        ref={canvasRef}
+        role="img"
+        aria-label="Minimap"
+        className="tlui-minimap__canvas"
+        style={{ width: "100%", height: 176, cursor: "pointer" }}
+        onPointerDown={handlePointerDown}
+      />
+    </div>
+  );
+}
+
+/**
+ * CustomNavigationPanel
+ * - Collapsed: ONLY chevron + zoom controls
+ * - Expanded: participant buttons moved into the TOP ROW, aligned right (34x34 each)
+ */
+export function CustomNavigationPanel({
+  actorOptions = [],
+  shapeActorIdByShapeId = {},
+  maxActors = 6,
+}) {
+  const editor = useEditor();
+
+  const actors = useMemo(
+    () => actorOptions.slice(0, maxActors),
+    [actorOptions, maxActors]
+  );
+
+  const [selectedActorIds, setSelectedActorIds] = useState([]);
+  const [isCollapsed, setIsCollapsed] = useState(true);
+
+  const toggleActor = (actorId) => {
+    setSelectedActorIds((prev) => {
+      const set = new Set(prev);
+      if (set.has(actorId)) set.delete(actorId);
+      else set.add(actorId);
+      return Array.from(set);
+    });
+  };
+
+  const clearSelection = () => setSelectedActorIds([]);
+
+  // when collapsing, clear selection so collapsed state is "no filters"
+  useEffect(() => {
+    if (isCollapsed) setSelectedActorIds([]);
+  }, [isCollapsed]);
+
+  // const colorMap = buildActorColorMap(actors);
+  const colorMap = useMemo(() => buildActorColorMap(actors), [actors]);
+
+  return (
+    <div
+      data-navpanel="true"
+      className="tlui-navigation-panel"
+      style={{ position: "relative" }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      onPointerMove={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onMouseUp={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* ===== Top row (always visible): chevron + zoom + (expanded) participant buttons on the right ===== */}
+      <div
+        role="toolbar"
+        aria-orientation="horizontal"
+        className="tlui-toolbar-container tlui-buttons__horizontal"
+        aria-label="Navigation"
+        style={{
+          outline: "none",
+          display: "flex",
+          alignItems: "center",
+          width: "90%",
+          gap: 5,
+          padding: 5,
+        }}
+      >
+        {/* Zoom buttons */}
+        <button
+          type="button"
+          className="tlui-button tlui-button__icon"
+          title="Zoom out"
+          onClick={() => editor.zoomOut()}
+          style={{ width: 34, height: 34, borderRadius: 10 }}
+        >
+          -
+        </button>
+
+        <button
+          type="button"
+          className="tlui-button tlui-button__icon"
+          title="Zoom to 100%"
+          onClick={() =>
+            editor.setCamera({
+              x: editor.getCamera().x,
+              y: editor.getCamera().y,
+              z: 1,
+            })
+          }
+          style={{ height: 34, borderRadius: 10, padding: "0 10px" }}
+        >
+          100%
+        </button>
+
+        <button
+          type="button"
+          className="tlui-button tlui-button__icon"
+          title="Zoom in"
+          onClick={() => editor.zoomIn()}
+          style={{ width: 34, height: 34, borderRadius: 10 }}
+        >
+          +
+        </button>
+
+        {/* push participant buttons to the right */}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          {!isCollapsed && (
+            <>
+              {/* "All" reset */}
+              <button
+                type="button"
+                className="tlui-button"
+                onClick={clearSelection}
+                title="Show all"
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
+                  fontWeight: 800,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 0,
+                }}
+              >
+                All
+              </button>
+
+              {/* participant buttons */}
+              {actors.map((a) => {
+                const actorKey = a.label || a.id; // ✅ same key used everywhere
+                const active = selectedActorIds.includes(actorKey);
+
+                // ✅ color based on actorKey (now matches the map)
+                // const colorMap = buildActorColorMap(actors);
+
+                const color = colorMap.get(actorKey) || "#111827";
+
+                return (
+                  <button
+                    key={actorKey}
+                    type="button"
+                    onClick={() => toggleActor(actorKey)}
+                    className="tlui-button"
+                    title={actorKey}
+                    aria-pressed={active}
+                    style={{
+                      width: 34,
+                      height: 34,
+                      borderRadius: 10,
+                      fontWeight: 800,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: 0,
+
+                      // ✅ Strong, obvious active state
+                      border: active
+                        ? `3px solid ${color}`
+                        : "1px solid rgba(0,0,0,0.12)",
+                      background: active
+                        ? `${color}22`
+                        : "rgba(255,255,255,0.92)",
+                      boxShadow: active ? `0 0 0 2px ${color}22` : "none",
+                    }}
+                  >
+                    {a.label || a.id}
+                  </button>
+                );
+              })}
+            </>
+          )}
+        </div>
+
+        <button
+          type="button"
+          className="tlui-button tlui-button__icon"
+          title={isCollapsed ? "Expand minimap" : "Collapse minimap"}
+          onClick={() => setIsCollapsed((v) => !v)}
+          aria-label={isCollapsed ? "Expand minimap" : "Collapse minimap"}
+          style={{ width: 34, height: 34, borderRadius: 10 }}
+        >
+          <FontAwesomeIcon
+            icon={isCollapsed ? faAngleDoubleUp : faAngleDoubleDown}
+          />
+        </button>
+      </div>
+
+      {/* ===== Expanded mode: only minimap below (participants are now in the top row) ===== */}
+      {!isCollapsed && (
+        <ActorFilteredMinimap
+          selectedActorIds={selectedActorIds}
+          shapeActorIdByShapeId={shapeActorIdByShapeId}
+          actorOptions={actors}
+        />
+      )}
+    </div>
+  );
+}

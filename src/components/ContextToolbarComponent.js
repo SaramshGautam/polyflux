@@ -13,7 +13,7 @@ import {
 } from "firebase/firestore";
 import { app, db, auth, googleProvider, storage } from "../firebaseConfig";
 import { useParams } from "react-router-dom";
-import { logAction } from "../utils/registershapes";
+import { logAction } from "../utils/actionLog";
 
 const REACTIONS = [
   { value: "like", icon: "check-circle" },
@@ -210,7 +210,7 @@ const ContextToolbarComponent = track(
             shapeId,
             shapeType
           );
-          fetchActionHistory({ className, projectName, teamName });
+          // fetchActionHistory({ className, projectName, teamName });
           // fetchActionHistory(
           //   { className, projectName, teamName },
           //   setActionHistory
@@ -247,7 +247,7 @@ const ContextToolbarComponent = track(
             shapeId,
             shapeType
           );
-          fetchActionHistory({ className, projectName, teamName });
+          // fetchActionHistory({ className, projectName, teamName });
           // fetchActionHistory(
           //   { className, projectName, teamName },
           //   setActionHistory

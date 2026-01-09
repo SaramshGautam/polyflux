@@ -3,6 +3,7 @@ import {
   signInWithPopup,
   signInWithEmailAndPassword,
   signInAnonymously,
+  updateProfile,
 } from "firebase/auth";
 import {
   doc,
@@ -12,6 +13,7 @@ import {
   where,
   getDocs,
   setDoc,
+  updateDoc,
   serverTimestamp,
 } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
@@ -39,6 +41,70 @@ const LoginPage = () => {
     };
   }, []);
 
+  // const participantQuickLogin = async (e) => {
+  //   e.preventDefault();
+
+  //   const normalizedEmail = participantEmail.trim().toLowerCase();
+  //   const pid = participantId.trim();
+
+  //   if (!normalizedEmail || !pid) {
+  //     addMessage("danger", "Please enter both email and Participant ID.");
+  //     return;
+  //   }
+
+  //   try {
+  //     // 1) Verify participant exists in Firestore
+  //     const userRef = collection(db, "users");
+  //     const q = query(userRef, where("email", "==", normalizedEmail));
+
+  //     const snap = await getDocs(q);
+
+  //     if (snap.empty) {
+  //       addMessage(
+  //         "danger",
+  //         "Not found. Please check your email and Participant ID."
+  //       );
+  //       return;
+  //     }
+
+  //     const userData = snap.docs[0].data();
+
+  //     // 2) Sign in via Firebase Auth (fastest: anonymous)
+  //     const anonRes = await signInAnonymously(auth);
+  //     const uid = anonRes.user.uid;
+
+  //     await updateProfile(anonRes.user, {
+  //       displayName: pid,
+  //     });
+
+  //     await setDoc(doc(db, "participantSessions", uid), {
+  //       uid,
+  //       email: normalizedEmail,
+  //       participantId: pid,
+  //       role: userData.role || "participant",
+  //       studyId: userData.studyId || "evaluation",
+  //       taskName: userData.taskName || "Plan a vacation in United States",
+  //       teamId: userData.teamId || "TeamA",
+  //       createdAt: serverTimestamp(),
+  //     });
+
+  //     addMessage("success", "Welcome! Redirecting to the whiteboard...");
+
+  //     const studyId = userData.studyId || "evaluation";
+  //     const taskName = userData.taskName || "Plan a vacation in United States";
+  //     const teamId = userData.teamId || "TeamA";
+
+  //     navigate(
+  //       `/whiteboard/${encodeURIComponent(studyId)}/${encodeURIComponent(
+  //         taskName
+  //       )}/${encodeURIComponent(teamId)}`
+  //     );
+  //   } catch (err) {
+  //     console.error("Participant quick login failed:", err);
+  //     addMessage("danger", "Login failed. Please try again.");
+  //   }
+  // };
+
   const participantQuickLogin = async (e) => {
     e.preventDefault();
 
@@ -54,7 +120,6 @@ const LoginPage = () => {
       // 1) Verify participant exists in Firestore
       const userRef = collection(db, "users");
       const q = query(userRef, where("email", "==", normalizedEmail));
-
       const snap = await getDocs(q);
 
       if (snap.empty) {
@@ -65,11 +130,23 @@ const LoginPage = () => {
         return;
       }
 
-      const userData = snap.docs[0].data();
+      // ✅ the exact matched user document
+      const userDocSnap = snap.docs[0];
+      const userData = userDocSnap.data();
+
+      // ✅ 1.5) Update the user's display name to the participant ID (P1, P2, ...)
+      await updateDoc(userDocSnap.ref, {
+        name: pid,
+        updatedAt: serverTimestamp(),
+        // optional: keep a field for audit/debugging
+        lastParticipantId: pid,
+      });
 
       // 2) Sign in via Firebase Auth (fastest: anonymous)
       const anonRes = await signInAnonymously(auth);
       const uid = anonRes.user.uid;
+
+      await updateProfile(anonRes.user, { displayName: pid });
 
       await setDoc(doc(db, "participantSessions", uid), {
         uid,

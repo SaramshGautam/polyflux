@@ -2,21 +2,86 @@
   --navbar-height: 60px;
 }
 
-.main-container {
-  margin-top: 60px;
+/* .main-container {
+  margin-top: var(--navbar-height);
   position: relative;
-  height: calc(100vh - 60px);
-  /* Neutral */
+  height: calc(100vh - var(--navbar-height));
+  background-color: var(--bg-neutral);
+  Neutral
   background-color: #b1b8ce;
-  /* Peach-Orange - Divergent*/
-  /* background-color: #f2c894; */
-  /* Pale Cerulean - Convergent*/
-  /* background-color: #f2c894; */
-  /* Pastel Orange - Divergent */
-  /* background-color: #ffb347; */
-  /* Dark Pastel Blue - Convergent */
-  /* background-color: #779ecc; */
+  Peach-Orange - Convergent
+  background-color: #f2c894;
+  Pale Cerulean - Divergent
+  background-color: #f2c894;
+  Pastel Orange - Convergent
+  background-color: #ffb347;
+  Dark Pastel Blue - Divergent
+  background-color: #779ecc;
   padding: 10px;
+  overflow: hidden;
+} */
+
+.tlui-layout__bottom__main {
+  width: 87%;
+}
+
+:root {
+  --navbar-height: 60px;
+
+  --bg-neutral: #b1b8ce; /* Neutral default */
+  --bg-yellow: #eff709; /* Darker muted tone */
+  --bg-blue: #779ecc; /* Divergent / final blue */
+  --bg-convergent: #f2c894; /* Convergent peach */
+}
+
+.main-container {
+  margin-top: var(--navbar-height);
+  position: relative;
+  height: calc(100vh - var(--navbar-height));
+  padding: 10px;
+  overflow: hidden;
+
+  background-color: var(--bg-neutral);
+  transition: background-color 0.25s ease-out;
+}
+
+/* Phase "base" states */
+.main-container.phase-neutral {
+  background-color: var(--bg-neutral);
+}
+
+.main-container.phase-divergent {
+  background-color: var(--bg-blue);
+}
+
+.main-container.phase-convergent {
+  background-color: var(--bg-convergent);
+}
+
+/* Flicker between dark & neutral, then land on blue */
+.main-container.phase-pulse {
+  animation: phaseFlicker 3s ease-out forwards;
+}
+
+@keyframes phaseFlicker {
+  0% {
+    background-color: var(--bg-neutral);
+  }
+  20% {
+    background-color: var(--bg-yellow);
+  }
+  40% {
+    background-color: var(--bg-neutral);
+  }
+  60% {
+    background-color: var(--bg-yellow);
+  }
+  80% {
+    background-color: var(--bg-neutral);
+  }
+  100% {
+    background-color: var(--bg-blue);
+  }
 }
 
 kbd.tlui-kbd {

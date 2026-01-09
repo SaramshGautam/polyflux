@@ -10,6 +10,7 @@ import "tldraw/tldraw.css";
 import "../App.css";
 import HistoryCommentPanel from "./HistoryCommentPanel";
 import ToggleExpandButton from "./ToggleExpandButton";
+import { logAction } from "../utils/actionLog";
 
 import {
   registerShape,
@@ -44,6 +45,10 @@ export default function CustomContextMenu({
 }) {
   const editor = useEditor();
   const currentUser = auth.currentUser;
+  const actorId =
+    auth.currentUser?.displayName || auth.currentUser?.uid || "anon";
+  const actorUid = auth.currentUser?.uid || null;
+
   const userIdFromAuth =
     currentUser?.displayName ||
     currentUser?.email ||
@@ -137,8 +142,26 @@ export default function CustomContextMenu({
     //   return;
     // }
 
-    const entry = makeHistoryEntry({ userId, verb: "updated", shape, editor });
-    setActionHistory((prev) => [entry, ...prev]);
+    const entry = makeHistoryEntry({
+      userId: actorId,
+      verb: "updated",
+      shape,
+      editor,
+    });
+    // setActionHistory((prev) => [entry, ...prev]);
+
+    await logAction({
+      className,
+      projectName,
+      teamName,
+      actorId,
+      actorUid,
+      verb: "updated",
+      shapeId: shape.id,
+      shapeType: shape.type,
+      textPreview: entry.text || "",
+      imageUrl: entry.imageUrl || "",
+    });
   }
 
   // idle-end fallback (e.g., user stops typing/moving)
@@ -186,12 +209,12 @@ export default function CustomContextMenu({
     const imageUrl =
       shapeType === "image" ? extractImageUrl(editor, shape) : "";
     return {
-      userId: userIdFromAuth || "anon",
-      verb, // normalized (no 'a' duplication)
-      shapeType, // 'note' | 'text' | 'image' | ...
+      userId: userId || "anon",
+      verb,
+      shapeType,
       shapeId: shape?.id,
-      text, // text preview ('' if not applicable)
-      imageUrl, // thumbnail url ('' if not applicable)
+      text,
+      imageUrl,
       timestamp: new Date().toISOString(),
     };
   }
@@ -254,7 +277,7 @@ export default function CustomContextMenu({
         className,
         projectName,
         teamName,
-        userId: userIdFromAuth,
+        userId: actorId,
       };
 
       newlyCreatedRef.current.add(newShape.id);
@@ -274,7 +297,7 @@ export default function CustomContextMenu({
             type: live.type,
             props: {
               ...live.props,
-              url: finalImageUrl, // 👈 this is what resolveImageUrl / Ask AI will see
+              url: finalImageUrl,
             },
           });
         }
@@ -286,12 +309,25 @@ export default function CustomContextMenu({
       }
 
       const entry = makeHistoryEntry({
-        userIdFromAuth,
+        userId: actorId,
         verb: "added",
         shape: newShape,
         editor,
       });
-      setActionHistory((prev) => [entry, ...prev]);
+      // setActionHistory((prev) => [entry, ...prev]);
+
+      await logAction({
+        className,
+        projectName,
+        teamName,
+        actorId,
+        actorUid,
+        verb: "added",
+        shapeId: newShape.id,
+        shapeType: newShape.type,
+        textPreview: entry.text || "",
+        imageUrl: entry.imageUrl || "",
+      });
     };
 
     const handleShapeDeletion = async (deletedShapeID) => {
@@ -311,7 +347,7 @@ export default function CustomContextMenu({
         className,
         projectName,
         teamName,
-        userId: userIdFromAuth,
+        userId: actorId,
       };
 
       await deleteShape(deletedShapeID.id, userContext);
@@ -319,12 +355,24 @@ export default function CustomContextMenu({
       const deleted = { id: deletedShapeID.id, type: "shape" };
 
       const entry = makeHistoryEntry({
-        userId: userIdFromAuth,
+        userId: actorId,
         verb: "deleted",
         shape: deleted,
         editor,
       });
-      setActionHistory((prev) => [entry, ...prev]);
+      // setActionHistory((prev) => [entry, ...prev]);
+
+      await logAction({
+        className,
+        projectName,
+        teamName,
+        actorId,
+        actorUid,
+        verb: "deleted",
+        shapeId: deletedShapeID.id,
+        shapeType: "shape",
+        textPreview: "",
+      });
     };
 
     const shapeCreateHandler = editor.sideEffects.registerAfterCreateHandler(
@@ -363,13 +411,13 @@ export default function CustomContextMenu({
           className,
           projectName,
           teamName,
-          userId: userIdFromAuth,
+          userId: actorId,
         };
 
         // --- session-based update ---
         ensureSession(normalized, userContext);
         await scheduleUpdateShape(normalized, userContext); // debounced write
-        bumpIdleTimer(normalized, userContext, userIdFromAuth, 1200);
+        bumpIdleTimer(normalized, userContext, actorId, 1200);
       }
     );
 
@@ -402,10 +450,10 @@ export default function CustomContextMenu({
                 className,
                 projectName,
                 teamName,
-                userId: userIdFromAuth,
+                userId: actorId,
               };
               // end if any
-              endSessionIfAny(leftShape, userContext, userIdFromAuth);
+              endSessionIfAny(leftShape, userContext, actorId);
             }
           }
         }
@@ -437,9 +485,9 @@ export default function CustomContextMenu({
               className,
               projectName,
               teamName,
-              userId: userIdFromAuth,
+              userId: actorId,
             };
-            endSessionIfAny(shape, userContext, userIdFromAuth);
+            endSessionIfAny(shape, userContext, actorId);
           }
         }
         lastEditingId = now;
@@ -514,7 +562,8 @@ export default function CustomContextMenu({
     };
 
     // Also update when selection changes
-    const unsubscribe = editor.store.listen(({ changes }) => {
+    const unsubscribe = editor.store.listen(({ changes, source }) => {
+      if (source !== "user") return;
       if (changes.selectedIds) {
         updateSelectedShape(selectedShape);
       }

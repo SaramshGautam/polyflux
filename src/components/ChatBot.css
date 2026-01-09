@@ -25,7 +25,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  background: linear-gradient(135deg, #2563eb, #4f46e5);
+  background: linear-gradient(135deg, #b8c7e7, #b3b0ea);
   color: #f9fafb;
 }
 
@@ -129,6 +129,16 @@
   align-self: flex-start;
   margin-right: auto;
 }
+.chatbot-message {
+  position: relative;
+}
+
+/* make sure text is selectable */
+.chatbot-message-body {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
 
 /* Copy button & copied pill */
 .chatbot-copy-btn {
@@ -136,17 +146,26 @@
   top: 6px;
   right: 6px;
   padding: 4px 6px;
+  z-index: 2;
   border: none;
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.75);
   color: #fff;
   cursor: pointer;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 120ms ease-in-out;
   font-size: 11px;
 }
-.chatbot-message.bot:hover .chatbot-copy-btn {
+/* .chatbot-message.bot:hover .chatbot-copy-btn {
   opacity: 1;
+} */
+
+.chatbot-message:hover .chatbot-copy-btn,
+.chatbot-message:focus-within .chatbot-copy-btn {
+  opacity: 1;
+  /* transform: translateY(0); */
+  pointer-events: auto;
 }
 
 .chatbot-copied-pill {
@@ -486,12 +505,118 @@
 
 .chatbot-nudge-toggle {
   font-size: 0.8rem;
-  color: #8d6e00;
+  color: #777;
   margin-left: 8px;
   flex-shrink: 0;
 }
 
 .chatbot-nudge-header:hover .chatbot-nudge-toggle {
-  background: #ede7dd;
+  /* background: #aaa; */
   transform: translateY(-1px);
+  font-weight: 500;
+}
+
+/* === Phase-based theming for chatbot === */
+
+/* Header colors */
+.chatbot-phase-neutral .chatbot-header {
+  background: linear-gradient(135deg, #b1b8ce, #a6a8b0);
+}
+
+.chatbot-phase-divergent .chatbot-header {
+  background: linear-gradient(135deg, #2563eb, #38bdf8); /* blue / sky */
+}
+
+.chatbot-phase-convergent .chatbot-header {
+  background: linear-gradient(
+    135deg,
+    #f97316,
+    #facc15
+  ); /* warm orange/yellow */
+}
+
+.chatbot-phase-incubation .chatbot-header {
+  background: linear-gradient(135deg, #64748b, #94a3b8); /* slate / calm */
+}
+
+.chatbot-phase-conflict .chatbot-header {
+  background: linear-gradient(135deg, #b91c1c, #f97316); /* red / orange */
+}
+
+/* Optional: tint bot messages by phase (soft, not shouty) */
+.chatbot-phase-divergent .chatbot-message.bot {
+  background: #e0f2fe; /* light blue */
+}
+
+.chatbot-phase-convergent .chatbot-message.bot {
+  background: #fff7ed; /* warm peach */
+}
+
+.chatbot-phase-incubation .chatbot-message.bot {
+  background: #f8fafc; /* very light slate */
+}
+
+.chatbot-phase-conflict .chatbot-message.bot {
+  background: #fef2f2; /* soft red */
+}
+
+/* === Phase-based nudge theming === */
+
+/* DIVERGENT: cool / exploratory */
+.chatbot-phase-divergent .chatbot-message--nudge {
+  background: #eff6ff; /* light blue */
+}
+
+.chatbot-phase-divergent .chatbot-nudge-header {
+  background: #dbeafe; /* blue-100 */
+}
+
+.chatbot-phase-divergent .chatbot-nudge-pill {
+  background: #bfdbfe; /* blue-200 */
+  color: #1d4ed8; /* blue-700 */
+}
+
+/* CONVERGENT: warm / decision mode */
+.chatbot-phase-convergent .chatbot-message--nudge {
+  background: #fff7ed; /* orange-50 */
+  border-left: 4px solid #f97316; /* orange-500 */
+}
+
+.chatbot-phase-convergent .chatbot-nudge-header {
+  background: #ffedd5; /* orange-100 */
+}
+
+.chatbot-phase-convergent .chatbot-nudge-pill {
+  background: #fed7aa; /* orange-200 */
+  color: #c2410c; /* orange-700 */
+}
+
+/* INCUBATION: calm / low-activity */
+.chatbot-phase-incubation .chatbot-message--nudge {
+  background: #f8fafc; /* slate-50 */
+  border-left: 4px solid #64748b; /* slate-500 */
+}
+
+.chatbot-phase-incubation .chatbot-nudge-header {
+  background: #e2e8f0; /* slate-200 */
+}
+
+.chatbot-phase-incubation .chatbot-nudge-pill {
+  background: #cbd5f5;
+  color: #334155; /* slate-700 */
+}
+
+/* CONFLICT: mixed signals / tension */
+.chatbot-phase-conflict .chatbot-message--nudge {
+  background: #fef2f2; /* red-50 */
+  border-left: 4px solid #ef4444; /* red-500 */
+}
+
+.chatbot-phase-conflict .chatbot-nudge-header {
+  background: #fee2e2; /* red-100 */
+}
+
+.chatbot-phase-conflict .chatbot-nudge-pill {
+  background: #fecaca; /* red-200 */
+  color: #b91c1c; /* red-700 */
 }
