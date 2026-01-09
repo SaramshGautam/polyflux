@@ -543,80 +543,154 @@
   background: linear-gradient(135deg, #b91c1c, #f97316); /* red / orange */
 }
 
-/* Optional: tint bot messages by phase (soft, not shouty) */
-.chatbot-phase-divergent .chatbot-message.bot {
+.chatbot-message.chatbot-message-theme-divergent.bot {
   background: #e0f2fe; /* light blue */
 }
 
-.chatbot-phase-convergent .chatbot-message.bot {
+.chatbot-message.chatbot-message-theme-convergent.bot {
   background: #fff7ed; /* warm peach */
 }
 
-.chatbot-phase-incubation .chatbot-message.bot {
+.chatbot-message.chatbot-message-theme-incubation.bot {
   background: #f8fafc; /* very light slate */
 }
 
-.chatbot-phase-conflict .chatbot-message.bot {
+.chatbot-message.chatbot-message-theme-conflict.bot {
   background: #fef2f2; /* soft red */
 }
 
-/* === Phase-based nudge theming === */
-
-/* DIVERGENT: cool / exploratory */
-.chatbot-phase-divergent .chatbot-message--nudge {
-  background: #eff6ff; /* light blue */
+/** Nudge card theming by message theme */
+.chatbot-message.chatbot-message-theme-divergent.chatbot-message--nudge {
+  background: #eff6ff; /* blue-50 */
 }
 
-.chatbot-phase-divergent .chatbot-nudge-header {
+.chatbot-message.chatbot-message-theme-divergent .chatbot-nudge-header {
   background: #dbeafe; /* blue-100 */
 }
 
-.chatbot-phase-divergent .chatbot-nudge-pill {
+.chatbot-message.chatbot-message-theme-divergent .chatbot-nudge-pill {
   background: #bfdbfe; /* blue-200 */
   color: #1d4ed8; /* blue-700 */
 }
 
-/* CONVERGENT: warm / decision mode */
-.chatbot-phase-convergent .chatbot-message--nudge {
+/* CONVERGENT */
+.chatbot-message.chatbot-message-theme-convergent.chatbot-message--nudge {
   background: #fff7ed; /* orange-50 */
   border-left: 4px solid #f97316; /* orange-500 */
 }
 
-.chatbot-phase-convergent .chatbot-nudge-header {
+.chatbot-message.chatbot-message-theme-convergent .chatbot-nudge-header {
   background: #ffedd5; /* orange-100 */
 }
 
-.chatbot-phase-convergent .chatbot-nudge-pill {
+.chatbot-message.chatbot-message-theme-convergent .chatbot-nudge-pill {
   background: #fed7aa; /* orange-200 */
   color: #c2410c; /* orange-700 */
 }
 
-/* INCUBATION: calm / low-activity */
-.chatbot-phase-incubation .chatbot-message--nudge {
+/* INCUBATION */
+.chatbot-message.chatbot-message-theme-incubation.chatbot-message--nudge {
   background: #f8fafc; /* slate-50 */
   border-left: 4px solid #64748b; /* slate-500 */
 }
 
-.chatbot-phase-incubation .chatbot-nudge-header {
+.chatbot-message.chatbot-message-theme-incubation .chatbot-nudge-header {
   background: #e2e8f0; /* slate-200 */
 }
 
-.chatbot-phase-incubation .chatbot-nudge-pill {
+.chatbot-message.chatbot-message-theme-incubation .chatbot-nudge-pill {
   background: #cbd5f5;
   color: #334155; /* slate-700 */
 }
 
-/* CONFLICT: mixed signals / tension */
-.chatbot-phase-conflict .chatbot-message--nudge {
+/* CONFLICT */
+.chatbot-message.chatbot-message-theme-conflict.chatbot-message--nudge {
   background: #fef2f2; /* red-50 */
   border-left: 4px solid #ef4444; /* red-500 */
 }
 
-.chatbot-phase-conflict .chatbot-nudge-header {
+.chatbot-message.chatbot-message-theme-conflict .chatbot-nudge-header {
   background: #fee2e2; /* red-100 */
 }
 
-.chatbot-phase-conflict .chatbot-nudge-pill {
+.chatbot-message.chatbot-message-theme-conflict .chatbot-nudge-pill {
   background: #fecaca; /* red-200 */
   color: #b91c1c; /* red-700 */
 }
+
+/* .chatbot-phase-divergent .chatbot-message.bot {
+  background: #e0f2fe; 
+}
+
+.chatbot-phase-convergent .chatbot-message.bot {
+  background: #fff7ed; 
+}
+
+.chatbot-phase-incubation .chatbot-message.bot {
+  background: #f8fafc; 
+}
+
+.chatbot-phase-conflict .chatbot-message.bot {
+  background: #fef2f2; 
+} */
+
+/* === Phase-based nudge theming === */
+
+/* DIVERGENT: cool / exploratory */
+/* .chatbot-phase-divergent .chatbot-message--nudge {
+  background: #eff6ff; 
+} */
+
+/* .chatbot-phase-divergent .chatbot-nudge-header {
+  background: #dbeafe; 
+} */
+
+/* .chatbot-phase-divergent .chatbot-nudge-pill {
+  background: #bfdbfe; 
+  color: #1d4ed8; 
+} */
+
+/* CONVERGENT: warm / decision mode */
+/* .chatbot-phase-convergent .chatbot-message--nudge {
+  background: #fff7ed; 
+  border-left: 4px solid #f97316; 
+}
+
+.chatbot-phase-convergent .chatbot-nudge-header {
+  background: #ffedd5; 
+}
+
+.chatbot-phase-convergent .chatbot-nudge-pill {
+  background: #fed7aa; 
+  color: #c2410c; 
+} */
+
+/* INCUBATION: calm / low-activity */
+/* .chatbot-phase-incubation .chatbot-message--nudge {
+  background: #f8fafc; 
+  border-left: 4px solid #64748b; 
+}
+
+.chatbot-phase-incubation .chatbot-nudge-header {
+  background: #e2e8f0; 
+}
+
+.chatbot-phase-incubation .chatbot-nudge-pill {
+  background: #cbd5f5;
+  color: #334155; 
+} */
+
+/* CONFLICT: mixed signals / tension */
+/* .chatbot-phase-conflict .chatbot-message--nudge {
+  background: #fef2f2; 
+  border-left: 4px solid #ef4444; 
+}
+
+.chatbot-phase-conflict .chatbot-nudge-header {
+  background: #fee2e2; 
+}
+
+.chatbot-phase-conflict .chatbot-nudge-pill {
+  background: #fecaca; 
+  color: #b91c1c;
+} */

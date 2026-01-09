@@ -263,6 +263,35 @@ const ChatBot = ({
   const [phaseTheme, setPhaseTheme] = useState("neutral");
   const lastExternalTriggerRef = useRef({ key: null, time: 0 });
   const EXTERNAL_TRIGGER_DEDUPE_MS = 2000;
+  const shellThemeTokenRef = useRef(0);
+  const shellThemeTimeoutRef = useRef(null);
+
+  const setShellThemeTemporarily = (theme, ms = 30_000) => {
+    const token = Date.now();
+    shellThemeTokenRef.current = token;
+
+    // set theme immediately
+    setPhaseTheme(theme);
+
+    // clear any prior timer
+    if (shellThemeTimeoutRef.current) {
+      clearTimeout(shellThemeTimeoutRef.current);
+    }
+
+    shellThemeTimeoutRef.current = setTimeout(() => {
+      // only revert if nothing newer happened
+      if (shellThemeTokenRef.current === token) {
+        setPhaseTheme("neutral");
+      }
+    }, ms);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (shellThemeTimeoutRef.current)
+        clearTimeout(shellThemeTimeoutRef.current);
+    };
+  }, []);
 
   // --- Nudge notification control ---
   const lastNotifiedRef = useRef({
@@ -481,8 +510,11 @@ const ChatBot = ({
 
       if (resolvedPhase) {
         const theme = getPhaseTheme(resolvedPhase);
-        setPhaseTheme(theme);
+        // setPhaseTheme(theme);
+        setShellThemeTemporarily(theme, 30_000);
       }
+
+      const theme = resolvedPhase ? getPhaseTheme(resolvedPhase) : "neutral";
 
       setMessages((prev) => [
         ...prev,
@@ -495,6 +527,7 @@ const ChatBot = ({
             ...(meta || {}),
             source: source || "trigger-chatbot",
             phase: resolvedPhase || phase || meta?.phase || null,
+            phaseTheme: theme,
             forceVisible: true,
           },
         },
@@ -505,185 +538,6 @@ const ChatBot = ({
     return () =>
       window.removeEventListener("trigger-chatbot", handleExternalTrigger);
   }, [setMessages]);
-
-  // useEffect(() => {
-  //   const handleExternalTrigger = (e) => {
-  //     const detail = e.detail || {};
-  //     const { snippet, source, position, meta } = detail;
-
-  //     setIsOpen(true);
-
-  //     if (position) {
-  //       setPosition({
-  //         x: position.x,
-  //         y: position.y,
-  //       });
-  //     }
-
-  //     // Build clip notes:
-  //     // 1) If we have a structured multi-selection in meta.selection,
-  //     //    create one clip per selected item.
-  //     // 2) Otherwise, fall back to a single "summary" clip from snippet.
-  //     setClipNotes((prev) => {
-  //       const next = [...prev];
-
-  //       if (meta?.selection && Array.isArray(meta.selection)) {
-  //         meta.selection.forEach((item) => {
-  //           const text =
-  //             item.text ||
-  //             item.label ||
-  //             (typeof item === "string" ? item : "") ||
-  //             "";
-
-  //           console.log("[Chatbot] meta.selection item:", item);
-
-  //           next.push({
-  //             id: item.id,
-  //             snip:
-  //               item.type === "image"
-  //                 ? item.url ||
-  //                   item.imageUrl ||
-  //                   item.src ||
-  //                   item.downloadUrl ||
-  //                   ""
-  //                 : text,
-  //             kind: item.type, // "note", "text", "image", etc.
-  //           });
-  //         });
-  //       } else if (snippet) {
-  //         next.push({
-  //           id: source,
-  //           snip: snippet,
-  //           kind: "summary",
-  //         });
-  //       }
-
-  //       return next;
-  //     });
-
-  //     // Optional: drop an auto-message summarizing what we captured
-  //     if (snippet) {
-  //       const note = `💡 Selection sent to AI:\n${snippet}`;
-  //       setMessages((prev) => [...prev, { sender: "bot", text: note }]);
-  //     }
-  //   };
-
-  //   window.addEventListener("trigger-chatbot", handleExternalTrigger);
-  //   return () => {
-  //     window.removeEventListener("trigger-chatbot", handleExternalTrigger);
-  //   };
-  // }, [setMessages]);
-
-  // const handleChipClick = async (chip, roleType, nudgeMsg) => {
-  //   // setUserInput(chip);
-  //   // console.log("Chip clicked:", chip);
-  //   console.log("Sending /act payload:", {
-  //     chip,
-  //     canvas_id: canvasId,
-  //     role: roleType || "catalyst",
-  //     user_id,
-  //     targets: targets,
-  //     params,
-  //   });
-  //   // setLoading(true);
-
-  //   const newMessages = [
-  //     ...messages,
-  //     { sender: "user", text: chip },
-  //     { sender: "bot", text: `🔧 Running action: ${chip}` },
-  //   ];
-  //   setMessages(newMessages);
-
-  //   try {
-  //     // const response = await fetch("http://localhost:8080/act", {
-  //     const response = await fetch(
-  //       "https://rv4u3xtdyi.execute-api.us-east-2.amazonaws.com/Prod/act",
-  //       {
-  //         method: "POST",
-  //         headers: { "Content-Type": "application/json" },
-  //         body: JSON.stringify({
-  //           chip: chip,
-  //           canvas_id: canvasId,
-  //           role: roleType || "catalyst",
-  //           user_id: user_id,
-  //           targets: targets || [],
-  //           params: params || {},
-  //         }),
-  //       }
-  //     );
-
-  //     const data = await response.json();
-  //     // const botReply = data.message || "Action completed.";
-  //     // const botReply = data.result || "Action completed.";
-  //     console.log(`---data---`, data);
-  //     if (data.error) {
-  //       setMessages([
-  //         ...newMessages,
-  //         { sender: "bot", text: `⚠️ Action error: ${data.error}` },
-  //       ]);
-  //       return;
-  //     }
-  //     const result = data.result ?? data;
-  //     // const botReply = result.outputs.content;
-  //     // setMessages([...newMessages, { sender: "bot", text: botReply }]);
-  //     console.log("Action response:", result);
-  //     // console.log("Action response:", botReply);
-
-  //     // const reply = summarizeActResult(result, {
-  //     //   chip: result.chip,
-  //     //   role: result.role,
-  //     // });
-
-  //     const maybeImages =
-  //       result?.image_urls ||
-  //       result?.created_shapes
-  //         ?.filter((s) => s.type === "image" && s.imageUrl)
-  //         .map((s) => s.imageUrl) ||
-  //       [];
-
-  //     let firebaseUrls = null;
-  //     if (maybeImages.length) {
-  //       try {
-  //         firebaseUrls = await mirrorAllImagesToFirebase(maybeImages, {
-  //           canvasId,
-  //           user_id,
-  //         });
-  //       } catch (e) {
-  //         console.error("Mirroring images (chip) failed:", e);
-  //         firebaseUrls = maybeImages;
-  //       }
-  //     }
-
-  //     console.log(`Bot Reply (raw):`, result?.output?.[0]?.content);
-
-  //     const botReply = formatBotReply(
-  //       // result?.outputs?.[0]?.content ?? "Action completed."
-  //       result?.outputs?.find((o) => o?.type === "summary")?.content ??
-  //         result?.output?.[0]?.content ??
-  //         "Action completed."
-  //     );
-  //     // const images = extractImageUrls(result);
-  //     console.log("Action reply:", botReply);
-
-  //     setMessages([
-  //       ...newMessages,
-  //       {
-  //         sender: "bot",
-  //         text: botReply,
-  //         type: roleType,
-  //         // chips: result.chip || [],
-  //         // image_urls: extractImageUrls(result),
-  //         image_urls: firebaseUrls,
-  //       },
-  //     ]);
-  //   } catch (error) {
-  //     console.error(error);
-  //     const botReply = "Error executing action.";
-  //     console.log("Action error:", botReply);
-  //   } finally {
-  //     setLoading(false);
-  //   }
-  // };
 
   const handleChipClick = async (chip, roleType, nudgeMsg) => {
     console.log("Chip clicked with nudgeMsg:", { chip, roleType, nudgeMsg });
@@ -858,6 +712,9 @@ const ChatBot = ({
           image_urls: firebaseUrls,
           meta: {
             phase: nudgeMsg?.meta?.phase || null,
+            phaseTheme:
+              nudgeMsg?.meta?.phaseTheme ||
+              getPhaseTheme(nudgeMsg?.meta?.phase),
             source: "act-followup",
             triggerId: nudgeMsg?.meta?.triggerId || null,
             forceVisible: true,
@@ -1064,7 +921,8 @@ const ChatBot = ({
       // let nudgeType = "nudge";
 
       const phaseThemeValue = getPhaseTheme(phase);
-      setPhaseTheme(phaseThemeValue);
+      // setPhaseTheme(phaseThemeValue);
+      setShellThemeTemporarily(phaseThemeValue, 30_000);
 
       // Prefer backend-provided nudge always
       const backendNudge = data.nudge || null;
@@ -1147,19 +1005,20 @@ const ChatBot = ({
         //   onTriggerFired(triggerId);
         // }
 
-        notifyUser(`Nudge triggered: ${label}`);
+        // notifyUser(`Nudge triggered: ${label}`);
       }
+      const msgTheme = getPhaseTheme(phase);
 
       setMessages((prev) => [
         ...prev,
         {
           sender: "bot",
-          // text: `${phaseLine}\n\n${nudgeText}`,
           text: `\n${nudgeText}`,
           type: nudgeType,
           chips,
           meta: {
             phase,
+            phaseTheme: msgTheme,
             source,
             tailShapeIds,
             windowIds: current_phase.window_ids || [],
@@ -1570,20 +1429,23 @@ const ChatBot = ({
             const msgPhaseTheme = msgPhase
               ? getPhaseTheme(msgPhase)
               : "neutral";
+            // const msgTheme = msgPhase ? getPhaseTheme(msgPhase) : "neutral";
+            const msgTheme =
+              msg.meta?.phaseTheme ||
+              (msg.meta?.phase ? getPhaseTheme(msg.meta.phase) : "neutral");
 
             const isPhaseScopedNudge = isNudgeLike && !!msgPhase;
             const forceVisible = !!msg.meta?.forceVisible;
 
-            const isPhaseVisible =
-              forceVisible ||
-              !isPhaseScopedNudge ||
-              msgPhaseTheme === "neutral" ||
-              msgPhaseTheme === phaseTheme;
+            // const isPhaseVisible =
+            //   forceVisible ||
+            //   !isPhaseScopedNudge ||
+            //   msgPhaseTheme === "neutral" ||
+            //   msgPhaseTheme === phaseTheme;
 
-            if (!isPhaseVisible) {
-              // Hide this message completely when phase does not match
-              return null;
-            }
+            // if (!isPhaseVisible) {
+            //   return null;
+            // }
 
             // const isNudgeLike =
             //   msg.type &&
@@ -1620,9 +1482,12 @@ const ChatBot = ({
               <div
                 key={idx}
                 ref={hasFocusShape ? nudgeScrollRef : null}
-                className={`chatbot-message ${msg.sender}${
-                  hasFocusShape ? " chatbot-message--highlight" : ""
-                }${isNudgeLike ? " chatbot-message--nudge" : ""}`}
+                className={`chatbot-message ${msg.sender}
+                ${hasFocusShape ? " chatbot-message--highlight" : ""}${
+                  isNudgeLike ? " chatbot-message--nudge" : ""
+                }
+                chatbot-message-theme-${msgTheme}
+                `}
               >
                 {/* Nudge header (collapsed/expand control) */}
                 {isNudgeLike && (
