@@ -33,6 +33,7 @@ prediction-backend/
 prediction-flask-backend/
 Agents
 app.py
+architecture.md
 
 
 cookies.txt
