@@ -1752,12 +1752,16 @@ const CollaborativeWhiteboard = () => {
         source,
       };
 
-      const res = await fetch("http://192.168.0.241:8060/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal,
-      });
+      // const res = await fetch("http://192.168.0.241:8060/analyze", {
+      const res = await fetch(
+        "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal,
+        }
+      );
 
       if (!res.ok) {
         throw new Error(`/analyze failed: ${res.status}`);

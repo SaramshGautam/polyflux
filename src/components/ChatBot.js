@@ -794,21 +794,22 @@ const ChatBot = ({
     const episodeId = canvasId || "TeamRoadTrip";
 
     try {
-      const res = await fetch("http://192.168.0.241:8060/analyze", {
-        // const res = await fetch("http://167.96.111.150:8060/analyze", {
-        // const res = await fetch(
-        //   "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
-        //   {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          episode_id: episodeId,
-          shapes: shapes,
-          window_sec: 15,
-          min_link: 0.5,
-          tail_window_count: 6, // ⬅️ match backend default
-        }),
-      });
+      // const res = await fetch("http://192.168.0.241:8060/analyze", {
+      // const res = await fetch("http://167.96.111.150:8060/analyze", {
+      const res = await fetch(
+        "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            episode_id: episodeId,
+            shapes: shapes,
+            window_sec: 15,
+            min_link: 0.5,
+            tail_window_count: 6, // ⬅️ match backend default
+          }),
+        }
+      );
 
       const data = await res.json();
       console.log("[/analyze] response:", data);
