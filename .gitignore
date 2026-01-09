@@ -27,6 +27,12 @@ yarn-error.log*
 .vercel
 .env
 firebase-key.json
+*.log
+*.json
+prediction-backend/
+prediction-flask-backend/
+Agents/
+
 
 cookies.txt
 cors.json
@@ -39,4 +45,5 @@ sync-server/
 test.py
 text.txt
 tldraw/
-
+phase_results/
+__pycache__
