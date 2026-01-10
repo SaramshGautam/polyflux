@@ -17,6 +17,17 @@ import {
   faBolt,
 } from "@fortawesome/free-solid-svg-icons";
 
+function linkifyText(text) {
+  if (!text) return "";
+
+  const urlRegex = /((https?:\/\/|www\.)[^\s<]+)/gi;
+
+  return text.replace(urlRegex, (url) => {
+    const href = url.startsWith("http") ? url : `https://${url}`;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+  });
+}
+
 const buildHistoryForBackend = (msgs) => {
   const last = msgs.slice(-10); // last 10 turns
   return last.map((m) => ({
@@ -77,7 +88,9 @@ async function uploadB64ToFirebase({
   // const path = `generated/${canvasSafe}/${uid}/${ts}-${idx}.png`;
   const path = `generated/${canvasSafe}/${uid}/${ts}-${idx}.${ext}`;
 
-  const blob = b64ToBlob(b64, "image/png");
+  // const blob = b64ToBlob(b64, "image/png");
+  const blob = b64ToBlob(raw, contentType);
+
   const ref = sRef(storage, path);
 
   await uploadBytes(ref, blob, {
@@ -247,6 +260,26 @@ function getNudgeHeader({ phase, triggerId, triggerLabel }) {
   const nicePhase = p ? ` (${p})` : "";
   return `Noticing a pattern${nicePhase}. Want a quick next step?`;
 }
+
+const SimpleLinkPreview = ({ url }) => {
+  if (!url) return null;
+  let host = url;
+  try {
+    host = new URL(url).hostname;
+  } catch {}
+  return (
+    <a
+      className="chatbot-link-preview"
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={url}
+    >
+      <div className="chatbot-link-preview-title">{host}</div>
+      <div className="chatbot-link-preview-url">{url}</div>
+    </a>
+  );
+};
 
 const ChatBot = ({
   messages,
@@ -613,7 +646,7 @@ const ChatBot = ({
         windowIds: meta.windowIds || [],
         tailShapeIds,
         text_snippets: dedupe(textSnips),
-        image_urls: dedupe(imageUrls),
+        // image_urls: dedupe(imageUrls),
         source: meta.source || "phase_nudge",
       };
     } catch (e) {
@@ -724,6 +757,12 @@ const ChatBot = ({
         "Action completed.";
 
       const botReply = formatBotReply(primaryOutput);
+
+      console.log(
+        "[images] raw b64 count:",
+        Array.isArray(b64s) ? b64s.length : 0
+      );
+      console.log("[images] firebaseUrls:", firebaseUrls);
 
       setMessages([
         ...newMessages,
@@ -1123,25 +1162,38 @@ const ChatBot = ({
       );
 
       const data = await response.json();
+
       if (data.reply) {
-        let firebaseUrls = null;
-        console.log(
-          `canvasId - ${canvasId} - user_id - ${user_id} - data`,
-          data
-        );
+        let imageUrlsFinal = [];
 
+        // 1) base64 route (your existing path)
         const b64s = data.images_b64 || data.image_b64;
-
         if (Array.isArray(b64s) && b64s.length) {
           try {
-            firebaseUrls = await uploadManyB64ToFirebase(b64s, {
+            const firebaseUrls = await uploadManyB64ToFirebase(b64s, {
               canvasId,
               user_id,
-              storage, // from your firebaseConfig import
+              storage,
             });
-            console.log("[upload] firebaseUrls:", firebaseUrls);
+            imageUrlsFinal = firebaseUrls;
           } catch (e) {
             console.error("Uploading images failed", e);
+          }
+        }
+
+        // 2) URL route (✅ THIS is what your backend is sending)
+        const urls = data.image_urls;
+        if (!imageUrlsFinal.length && Array.isArray(urls) && urls.length) {
+          try {
+            // optional: mirror to Firebase for durability + easier copying
+            const firebaseUrls = await mirrorAllImagesToFirebase(urls, {
+              canvasId,
+              user_id,
+            });
+            imageUrlsFinal = firebaseUrls;
+          } catch (e) {
+            console.error("Mirroring image_urls failed:", e);
+            imageUrlsFinal = urls; // fallback to original signed URLs
           }
         }
 
@@ -1150,7 +1202,8 @@ const ChatBot = ({
           {
             sender: "bot",
             text: formatBotReply(data.reply),
-            image_urls: firebaseUrls, // will now be Firebase URLs
+            image_urls: imageUrlsFinal,
+            previewUrl: extractFirstUrl(data.reply),
           },
         ]);
       } else {
@@ -1184,6 +1237,123 @@ const ChatBot = ({
     }
   };
 
+  // ---- Link parsing helpers ----
+  const isHttpUrl = (s) => typeof s === "string" && /^https?:\/\/\S+$/i.test(s);
+
+  // Splits a string into React nodes with:
+  // - markdown links: [label](https://...)
+  // - bare urls: https://...
+  function renderRichInline(text, keyPrefix = "rt") {
+    const str = String(text ?? "");
+    const nodes = [];
+
+    // (label)(https://url)  <-- YOUR CURRENT FORMAT
+    const parenLinkRe = /\(([^)]+)\)\((https?:\/\/[^\s)]+)\)/g;
+
+    // [label](https://url)  <-- markdown format
+    const mdLinkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+
+    // bare https://url
+    // const urlRe = /(https?:\/\/[^\s<>()]+[^\s<>().,!?;:"')\]])/g;
+    const urlRe = /((?:https?:\/\/|www\.)[^\s<>()]+[^\s<>().,!?;:"')\]])/g;
+
+    // 1) tokenize (label)(url) first
+    let parts = [];
+    let last = 0;
+    let m;
+
+    while ((m = parenLinkRe.exec(str)) !== null) {
+      const [full, label, url] = m;
+      const start = m.index;
+      const end = start + full.length;
+
+      if (start > last)
+        parts.push({ type: "text", value: str.slice(last, start) });
+      parts.push({ type: "link", label, url });
+      last = end;
+    }
+    if (last < str.length) parts.push({ type: "text", value: str.slice(last) });
+
+    // 2) within remaining text parts, tokenize markdown links
+    const parts2 = [];
+    parts.forEach((p) => {
+      if (p.type !== "text") return parts2.push(p);
+
+      const chunk = p.value;
+      let li = 0;
+      let mm;
+      while ((mm = mdLinkRe.exec(chunk)) !== null) {
+        const [full, label, url] = mm;
+        const s = mm.index;
+        const e = s + full.length;
+
+        if (s > li) parts2.push({ type: "text", value: chunk.slice(li, s) });
+        parts2.push({ type: "link", label, url });
+        li = e;
+      }
+      if (li < chunk.length)
+        parts2.push({ type: "text", value: chunk.slice(li) });
+    });
+
+    // 3) within remaining text parts, auto-link bare URLs
+    parts2.forEach((p, i) => {
+      if (p.type === "link") {
+        nodes.push(
+          <a
+            key={`${keyPrefix}-link-${i}`}
+            href={p.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="chatbot-link"
+          >
+            {p.label}
+          </a>
+        );
+        return;
+      }
+
+      const chunk = p.value;
+      let li = 0;
+      let mu;
+      while ((mu = urlRe.exec(chunk)) !== null) {
+        const url = mu[1];
+        const s = mu.index;
+        const e = s + url.length;
+
+        if (s > li)
+          nodes.push(
+            <span key={`${keyPrefix}-t-${i}-${li}`}>{chunk.slice(li, s)}</span>
+          );
+
+        nodes.push(
+          <a
+            key={`${keyPrefix}-url-${i}-${s}`}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="chatbot-link"
+          >
+            {url}
+          </a>
+        );
+
+        li = e;
+      }
+      if (li < chunk.length)
+        nodes.push(
+          <span key={`${keyPrefix}-tail-${i}-${li}`}>{chunk.slice(li)}</span>
+        );
+    });
+
+    return nodes;
+  }
+
+  const extractFirstUrl = (text) => {
+    const s = String(text || "");
+    const m = s.match(/https?:\/\/[^\s)]+/i);
+    return m ? m[0] : null;
+  };
+
   const renderMessageText = (text) => {
     const lines = toLines(text);
 
@@ -1193,15 +1363,34 @@ const ChatBot = ({
     let codeBuf = [];
     let listBuf = [];
 
+    // const flushList = () => {
+    //   if (!listBuf.length) return;
+
+    //   out.push(
+    //     <ul key={`list-${out.length}`} className="chatbot-list">
+    //       {listBuf.map((li, idx) => (
+    //         <li key={idx}>{li}</li>
+    //       ))}
+    //     </ul>
+    //   );
+    //   listBuf = [];
+    // };
+
     const flushList = () => {
       if (!listBuf.length) return;
+
+      const listKey = `list-${out.length}`;
+
       out.push(
-        <ul key={`list-${out.length}`} className="chatbot-list">
+        <ul key={listKey} className="chatbot-list">
           {listBuf.map((li, idx) => (
-            <li key={idx}>{li}</li>
+            <li key={`${listKey}-li-${idx}`}>
+              {renderRichInline(li, `${listKey}-li-${idx}`)}
+            </li>
           ))}
         </ul>
       );
+
       listBuf = [];
     };
 
@@ -1254,7 +1443,8 @@ const ChatBot = ({
 
       out.push(
         <p key={`p-${i}`} className="chatbot-paragraph">
-          {line}
+          {/* {line} */}
+          {renderRichInline(line, `p-${i}`)}
         </p>
       );
     });
@@ -1662,6 +1852,15 @@ const ChatBot = ({
                       {renderMessageText(msg.text)}
                     </div>
 
+                    {msg.previewUrl && (
+                      <div
+                        className="chatbot-link-preview"
+                        style={{ marginTop: 8 }}
+                      >
+                        <SimpleLinkPreview url={msg.previewUrl} />
+                      </div>
+                    )}
+
                     {/* {msg.type && (
                       <div className="chatbot-nudge-type">
                         <strong>Type:</strong> {msg.type}
@@ -1868,40 +2067,6 @@ const ChatBot = ({
     // Sidebar / embedded version, no Rnd
     <div className="chatbot-embedded">{renderInner()}</div>
   );
-
-  // return (
-  //   <>
-  //     {isOpen && (
-  //       <Rnd
-  //         position={position}
-  //         // bounds="parent"
-  //         className="chatbot-rnd"
-  //         default={{
-  //           x: window.innerWidth - 400 - 20,
-  //           y: window.innerHeight - 540 - 20,
-  //         }}
-  //         size={{ width: 400, height: 500 }}
-  //         onDragStop={(e, d) => setPosition({ x: d.x, y: d.y })}
-  //         dragHandleClassName="chatbot-drag"
-  //         enableResizing={{
-  //           topLeft: true,
-  //           bottomRight: false,
-  //           top: true,
-  //           right: false,
-  //           bottom: false,
-  //           left: false,
-  //           topRight: false,
-  //           bottomLeft: false,
-  //         }}
-  //         maxWidth={600}
-  //         maxHeight={800}
-  //       >
-  //         {renderInner()}
-  //       </Rnd>
-  //     ) : (<div className="chatbot-embedded">{renderInner()}</div>);
-  //     }
-  //   </>
-  // );
 };
 
 export default ChatBot;
