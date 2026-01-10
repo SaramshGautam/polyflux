@@ -768,6 +768,7 @@ const CollaborativeWhiteboard = () => {
   const [robotLoop, setRobotLoop] = useState(true);
   const [robotPhase, setRobotPhase] = useState(null);
   const ROBOT_GAP_PX = 10; // how many px above the minimap/panel
+  const [chatbotOpen, setChatbotOpen] = useState(false);
   const ROBOT_SIZE = 50; // must match <RobotDock size={...} />
 
   const [robotPosition, setRobotPosition] = useState({ left: 16, bottom: 158 });
@@ -1752,16 +1753,15 @@ const CollaborativeWhiteboard = () => {
         source,
       };
 
-      // const res = await fetch("http://192.168.0.241:8060/analyze", {
-      const res = await fetch(
-        "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-          signal,
-        }
-      );
+      const res = await fetch("http://127.0.0.1:8060/analyze", {
+        // const res = await fetch(
+        //   "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
+        //   {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal,
+      });
 
       if (!res.ok) {
         throw new Error(`/analyze failed: ${res.status}`);
@@ -2728,6 +2728,7 @@ const CollaborativeWhiteboard = () => {
           // position={{ left: 16, bottom: 158 }}
           position={robotPosition}
           size={ROBOT_SIZE}
+          onOpenChat={() => setChatbotOpen(true)}
           zIndex={10070}
         />
 
@@ -2801,6 +2802,8 @@ const CollaborativeWhiteboard = () => {
             targets={selectedTargets}
             params={{}}
             shapes={shapesForAnalysis}
+            forceOpen={chatbotOpen}
+            onClose={() => setChatbotOpen(false)}
             // onNudgeComputed={({
             //   tailShapeIds,
             //   currentPhase,

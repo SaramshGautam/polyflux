@@ -60,18 +60,34 @@ async function uploadB64ToFirebase({
   const ts = Date.now();
   // const uidSafe = (user_id || "anon").replace(/[^\w.@-]/g, "_");
   const canvasSafe = (canvasId || "canvas").replace(/[^\w.@-]/g, "_");
+  const { b64: raw, contentType } = normalizeB64(b64);
   // const path = `generated/${canvasSafe}/${uidSafe}/${ts}-${idx}.png`;
-  const path = `generated/${canvasSafe}/${uid}/${ts}-${idx}.png`;
+
+  const ext =
+    contentType === "image/jpeg"
+      ? "jpg"
+      : contentType === "image/webp"
+      ? "webp"
+      : contentType === "image/gif"
+      ? "gif"
+      : contentType === "image/svg+xml"
+      ? "svg"
+      : "png";
+
+  // const path = `generated/${canvasSafe}/${uid}/${ts}-${idx}.png`;
+  const path = `generated/${canvasSafe}/${uid}/${ts}-${idx}.${ext}`;
 
   const blob = b64ToBlob(b64, "image/png");
   const ref = sRef(storage, path);
 
   await uploadBytes(ref, blob, {
-    contentType: "image/png",
+    // contentType: "image/png",
+    contentType,
     cacheControl: "public, max-age=31536000, immutable",
     customMetadata: {
       source: "chatbot",
-      canvasId,
+      // canvasId,
+      canvasId: String(canvasId || ""),
       // user_id,
       createdAt: new Date(ts).toISOString(),
     },
@@ -248,6 +264,8 @@ const ChatBot = ({
   onNudgeFocusComputed,
   variant = "floating",
   onTriggerFired,
+  forceOpen = false,
+  onClose,
 }) => {
   const [userInput, setUserInput] = useState("");
   const [isOpen, setIsOpen] = useState(variant === "floating");
@@ -285,6 +303,10 @@ const ChatBot = ({
       }
     }, ms);
   };
+
+  useEffect(() => {
+    if (forceOpen) setIsOpen(true);
+  }, [forceOpen]);
 
   useEffect(() => {
     return () => {
@@ -618,7 +640,7 @@ const ChatBot = ({
     const newMessages = [
       ...messages,
       { sender: "user", text: chip },
-      { sender: "bot", text: `🔧 Running action: ${chip}` },
+      // { sender: "bot", text: `🔧 Running action: ${chip}` },
     ];
     setMessages(newMessages);
     setLoading(true);
@@ -794,22 +816,21 @@ const ChatBot = ({
     const episodeId = canvasId || "TeamRoadTrip";
 
     try {
-      // const res = await fetch("http://192.168.0.241:8060/analyze", {
-      // const res = await fetch("http://167.96.111.150:8060/analyze", {
-      const res = await fetch(
-        "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            episode_id: episodeId,
-            shapes: shapes,
-            window_sec: 15,
-            min_link: 0.5,
-            tail_window_count: 6, // ⬅️ match backend default
-          }),
-        }
-      );
+      const res = await fetch("http://127.0.0.1:8060/analyze", {
+        // const res = await fetch("http://167.96.111.150:8060/analyze", {
+        // const res = await fetch(
+        //   "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
+        //   {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          episode_id: episodeId,
+          shapes: shapes,
+          window_sec: 15,
+          min_link: 0.5,
+          tail_window_count: 6, // ⬅️ match backend default
+        }),
+      });
 
       const data = await res.json();
       console.log("[/analyze] response:", data);
@@ -1115,9 +1136,10 @@ const ChatBot = ({
           try {
             firebaseUrls = await uploadManyB64ToFirebase(b64s, {
               canvasId,
-              // user_id,
+              user_id,
               storage, // from your firebaseConfig import
             });
+            console.log("[upload] firebaseUrls:", firebaseUrls);
           } catch (e) {
             console.error("Uploading images failed", e);
           }
@@ -1160,6 +1182,87 @@ const ChatBot = ({
     } catch {
       return [String(val)];
     }
+  };
+
+  const renderMessageText = (text) => {
+    const lines = toLines(text);
+
+    // Simple fenced code block support ```...```
+    const out = [];
+    let inCode = false;
+    let codeBuf = [];
+    let listBuf = [];
+
+    const flushList = () => {
+      if (!listBuf.length) return;
+      out.push(
+        <ul key={`list-${out.length}`} className="chatbot-list">
+          {listBuf.map((li, idx) => (
+            <li key={idx}>{li}</li>
+          ))}
+        </ul>
+      );
+      listBuf = [];
+    };
+
+    const flushCode = () => {
+      if (!codeBuf.length) return;
+      out.push(
+        <pre key={`code-${out.length}`} className="chatbot-code">
+          <code>{codeBuf.join("\n")}</code>
+        </pre>
+      );
+      codeBuf = [];
+    };
+
+    lines.forEach((rawLine, i) => {
+      const line = String(rawLine ?? "");
+
+      // toggle fenced code
+      if (line.trim().startsWith("```")) {
+        if (inCode) {
+          // closing
+          flushCode();
+          inCode = false;
+        } else {
+          // opening
+          flushList();
+          inCode = true;
+        }
+        return;
+      }
+
+      if (inCode) {
+        codeBuf.push(line);
+        return;
+      }
+
+      const bullet = line.match(/^\s*(?:-|\*|•)\s+(.*)$/);
+      if (bullet) {
+        listBuf.push(bullet[1]);
+        return;
+      }
+
+      // flush any active list before normal paragraph
+      flushList();
+
+      // blank line -> spacing
+      if (!line.trim()) {
+        out.push(<div key={`sp-${i}`} className="chatbot-spacer" />);
+        return;
+      }
+
+      out.push(
+        <p key={`p-${i}`} className="chatbot-paragraph">
+          {line}
+        </p>
+      );
+    });
+
+    flushList();
+    if (inCode) flushCode();
+
+    return out;
   };
 
   // Turn /act result into a readable chat message
@@ -1367,15 +1470,6 @@ const ChatBot = ({
           </div>
 
           <div className="chatbot-header-actions">
-            {/* <button
-              className="chatbot-header-btn"
-              // onClick={toggleSidebar}
-              onClick={() => toggleSidebar?.()}
-              title="Toggle chat history"
-            >
-              <FontAwesomeIcon icon={faClockRotateLeft} />
-            </button> */}
-
             {variant === "floating" && (
               <button
                 className="chatbot-header-btn"
@@ -1389,7 +1483,7 @@ const ChatBot = ({
             <button
               className="chatbot-header-btn"
               onClick={handleRequestNudges}
-              title={nudgesLoading ? "Analyzing..." : "Get canvas-based nudge"}
+              title={nudgesLoading ? "Analyzing..." : "Get AI's help"}
               disabled={nudgesLoading}
             >
               <FontAwesomeIcon icon={faBolt} />
@@ -1400,9 +1494,11 @@ const ChatBot = ({
               // onClick={() => setIsOpen(false)}
               onClick={() => {
                 if (variant === "floating") {
-                  setIsOpen(false); // just close the floating widget
+                  setIsOpen(false);
+                  onClose?.();
                 } else {
-                  toggleSidebar?.(); // close the sidebar wrapper
+                  toggleSidebar?.();
+                  onClose?.();
                 }
               }}
               title="Close"
@@ -1554,12 +1650,16 @@ const ChatBot = ({
                       <span className="chatbot-copied-pill">Copied</span>
                     )}
 
-                    <div className="chatbot-message-body">
+                    {/* <div className="chatbot-message-body">
                       {toLines(msg.text).map((line, i) => (
-                        <p key={i} style={{ margin: 0 }}>
+                        <ul key={i} style={{ margin: 0 }}>
                           {line}
-                        </p>
+                        </ul>
                       ))}
+                    </div> */}
+
+                    <div className="chatbot-message-body chatbot-card">
+                      {renderMessageText(msg.text)}
                     </div>
 
                     {/* {msg.type && (
@@ -1631,7 +1731,9 @@ const ChatBot = ({
             );
           })}
 
-          {loading && <div className="chatbot-message bot">Thinking...</div>}
+          {loading && (
+            <div className="chatbot-message bot">Working on it...</div>
+          )}
         </div>
 
         <div className="chatbot-clipnote-bar">

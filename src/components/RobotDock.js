@@ -12,6 +12,8 @@ export default function RobotDock({
   onEnded = null,
   countdownEndsAt = null,
   countdownDurationMs = 30000,
+
+  onOpenChat = null, // ✅ NEW
 }) {
   const { left, right, top, bottom } = position;
 
@@ -23,7 +25,6 @@ export default function RobotDock({
       ? "rgba(255, 153, 0, 0.95)"
       : neutralRing;
 
-  // progress: 1 -> 0 during countdown
   const [progress, setProgress] = useState(0);
 
   useEffect(() => {
@@ -45,11 +46,9 @@ export default function RobotDock({
     return () => cancelAnimationFrame(raf);
   }, [countdownEndsAt, countdownDurationMs]);
 
-  // ring is colored only while countdown active
   const countdownActive = Boolean(countdownEndsAt && progress > 0);
   const effectiveRingColor = countdownActive ? ringColor : neutralRing;
 
-  // SVG ring math (hooks must be unconditional)
   const radius = useMemo(() => size / 2 - ringWidth / 2, [size, ringWidth]);
   const circumference = useMemo(() => 2 * Math.PI * radius, [radius]);
   const dashOffset = useMemo(
@@ -57,11 +56,30 @@ export default function RobotDock({
     [circumference, progress]
   );
 
-  // ✅ Early return AFTER all hooks
   if (!show || !src) return null;
+
+  const handleOpen = () => {
+    // prevent text selection / weird focus
+    if (typeof onOpenChat === "function") onOpenChat();
+    else {
+      // fallback: broadcast an event that ChatBot (or parent) can listen to
+      try {
+        window.dispatchEvent(new CustomEvent("chatbot-open"));
+      } catch {}
+    }
+  };
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={handleOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          handleOpen();
+        }
+      }}
       style={{
         position: "fixed",
         left,
@@ -77,6 +95,10 @@ export default function RobotDock({
         alignItems: "center",
         justifyContent: "center",
         pointerEvents: "auto",
+
+        cursor: "pointer", // ✅ looks clickable
+        userSelect: "none",
+        WebkitTapHighlightColor: "transparent",
       }}
       title={`Robot (${phase || "neutral"})`}
     >
@@ -90,7 +112,6 @@ export default function RobotDock({
           pointerEvents: "none",
         }}
       >
-        {/* base ring */}
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -100,7 +121,6 @@ export default function RobotDock({
           strokeWidth={ringWidth}
         />
 
-        {/* colored arc that shrinks clockwise */}
         {countdownEndsAt && (
           <circle
             cx={size / 2}
@@ -117,7 +137,6 @@ export default function RobotDock({
         )}
       </svg>
 
-      {/* inner “screen” clips the video */}
       <div
         style={{
           position: "relative",
@@ -126,6 +145,7 @@ export default function RobotDock({
           borderRadius: 18 - ringWidth,
           overflow: "hidden",
           background: "transparent",
+          pointerEvents: "none", // ✅ click goes to container, not video
         }}
       >
         <video
@@ -146,6 +166,7 @@ export default function RobotDock({
             objectFit: "cover",
             display: "block",
             transform: "translate(-1px, -1px)",
+            pointerEvents: "none", // ✅
           }}
         />
       </div>

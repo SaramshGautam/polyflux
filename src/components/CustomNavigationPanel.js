@@ -6,6 +6,9 @@ import {
   faAngleDoubleDown,
 } from "@fortawesome/free-solid-svg-icons";
 
+const MINIMAP_W = 400;
+const MINIMAP_H = 240;
+
 // ---- minimap helpers (keep your existing ones) ----
 function unionBounds(editor, shapeIds) {
   let bounds = null;
@@ -39,183 +42,6 @@ function buildActorColorMap(actorOptions) {
 
   return map;
 }
-
-// function drawMinimap({
-//   editor,
-//   canvas,
-//   shapeIds,
-//   shapeActorIdByShapeId,
-//   actorColorByActorId,
-// }) {
-//   if (!canvas) return;
-//   const ctx = canvas.getContext("2d");
-//   if (!ctx) return;
-
-//   const W = canvas.width;
-//   const H = canvas.height;
-//   ctx.clearRect(0, 0, W, H);
-
-//   // ✅ Light background (white / slight gray)
-//   ctx.fillStyle = "#f7f7f8"; // tweak: "#ffffff" if you want pure white
-//   ctx.fillRect(0, 0, W, H);
-
-//   // ✅ subtle border around the minimap
-//   ctx.strokeStyle = "rgba(0,0,0,0.08)";
-//   ctx.lineWidth = 1;
-//   ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
-
-//   if (!shapeIds.length) {
-//     ctx.fillStyle = "rgba(0,0,0,0.55)";
-//     ctx.font = "12px system-ui";
-//     ctx.fillText("No shapes for selected participant(s)", 10, 20);
-//     return;
-//   }
-
-//   const contentBounds = unionBounds(editor, shapeIds);
-//   if (!contentBounds) return;
-
-//   const pad = 200;
-//   const worldX = contentBounds.x - pad;
-//   const worldY = contentBounds.y - pad;
-//   const worldW = contentBounds.w + pad * 2;
-//   const worldH = contentBounds.h + pad * 2;
-
-//   const sx = W / worldW;
-//   const sy = H / worldH;
-//   const s = Math.min(sx, sy);
-
-//   const drawW = worldW * s;
-//   const drawH = worldH * s;
-//   const ox = (W - drawW) / 2;
-//   const oy = (H - drawH) / 2;
-
-//   // slightly thicker so participant colors read better
-//   ctx.lineWidth = 1.75;
-
-//   for (const id of shapeIds) {
-//     const b = editor.getShapePageBounds(id);
-//     if (!b) continue;
-
-//     const x = ox + (b.x - worldX) * s;
-//     const y = oy + (b.y - worldY) * s;
-//     const w = Math.max(2, b.w * s);
-//     const h = Math.max(2, b.h * s);
-
-//     const actorId = shapeActorIdByShapeId?.[id] || null;
-//     const color = actorId ? actorColorByActorId.get(actorId) : null;
-
-//     // ✅ per-participant edge color (fallback if unknown)
-//     const stroke = color || "rgba(0,0,0,0.35)";
-//     ctx.strokeStyle = stroke;
-
-//     // ✅ tiny fill tinted by participant color (very light)
-//     if (color) {
-//       ctx.fillStyle = `${color}14`; // light tint on white background
-//       ctx.fillRect(x, y, w, h);
-//     }
-
-//     ctx.strokeRect(x, y, w, h);
-//   }
-
-//   // viewport (keep it visible on light bg)
-//   const vp = editor.getViewportPageBounds?.();
-//   if (vp) {
-//     ctx.strokeStyle = "rgba(0, 140, 255, 0.9)";
-//     ctx.lineWidth = 1.5;
-//     const x = ox + (vp.x - worldX) * s;
-//     const y = oy + (vp.y - worldY) * s;
-//     const w = vp.w * s;
-//     const h = vp.h * s;
-//     ctx.strokeRect(x, y, w, h);
-//   }
-// }
-
-// function drawMinimap({
-//   editor,
-//   canvas,
-//   shapeIds,
-//   shapeActorIdByShapeId,
-//   actorColorByActorId,
-// }) {
-//   if (!canvas) return null;
-//   const ctx = canvas.getContext("2d");
-//   if (!ctx) return null;
-
-//   const W = canvas.width;
-//   const H = canvas.height;
-//   ctx.clearRect(0, 0, W, H);
-
-//   ctx.fillStyle = "#f7f7f8";
-//   ctx.fillRect(0, 0, W, H);
-
-//   ctx.strokeStyle = "rgba(0,0,0,0.08)";
-//   ctx.lineWidth = 1;
-//   ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
-
-//   if (!shapeIds.length) {
-//     ctx.fillStyle = "rgba(0,0,0,0.55)";
-//     ctx.font = "12px system-ui";
-//     ctx.fillText("No shapes for selected participant(s)", 10, 20);
-//     return null;
-//   }
-
-//   const contentBounds = unionBounds(editor, shapeIds);
-//   if (!contentBounds) return null;
-
-//   const pad = 200;
-//   const worldX = contentBounds.x - pad;
-//   const worldY = contentBounds.y - pad;
-//   const worldW = contentBounds.w + pad * 2;
-//   const worldH = contentBounds.h + pad * 2;
-
-//   const sx = W / worldW;
-//   const sy = H / worldH;
-//   const s = Math.min(sx, sy);
-
-//   const drawW = worldW * s;
-//   const drawH = worldH * s;
-//   const ox = (W - drawW) / 2;
-//   const oy = (H - drawH) / 2;
-
-//   ctx.lineWidth = 1.75;
-
-//   for (const id of shapeIds) {
-//     const b = editor.getShapePageBounds(id);
-//     if (!b) continue;
-
-//     const x = ox + (b.x - worldX) * s;
-//     const y = oy + (b.y - worldY) * s;
-//     const w = Math.max(2, b.w * s);
-//     const h = Math.max(2, b.h * s);
-
-//     const actorId = shapeActorIdByShapeId?.[id] || null;
-//     const color = actorId ? actorColorByActorId.get(actorId) : null;
-
-//     const stroke = color || "rgba(0,0,0,0.35)";
-//     ctx.strokeStyle = stroke;
-
-//     if (color) {
-//       ctx.fillStyle = `${color}14`;
-//       ctx.fillRect(x, y, w, h);
-//     }
-
-//     ctx.strokeRect(x, y, w, h);
-//   }
-
-//   const vp = editor.getViewportPageBounds?.();
-//   if (vp) {
-//     ctx.strokeStyle = "rgba(0, 140, 255, 0.9)";
-//     ctx.lineWidth = 1.5;
-//     const x = ox + (vp.x - worldX) * s;
-//     const y = oy + (vp.y - worldY) * s;
-//     const w = vp.w * s;
-//     const h = vp.h * s;
-//     ctx.strokeRect(x, y, w, h);
-//   }
-
-//   // ✅ RETURN TRANSFORM so click can map minimap->page
-//   return { worldX, worldY, s, ox, oy, W, H };
-// }
 
 function drawMinimap({
   editor,
@@ -341,8 +167,10 @@ function ActorFilteredMinimap({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    canvas.width = 367;
-    canvas.height = 176;
+    // canvas.width = 367;
+    // canvas.height = 176;
+    canvas.width = MINIMAP_W;
+    canvas.height = MINIMAP_H;
 
     const t = drawMinimap({
       editor,
@@ -398,13 +226,23 @@ function ActorFilteredMinimap({
   };
 
   return (
-    <div className="tlui-minimap">
+    <div
+      className="tlui-minimap"
+      style={{ height: MINIMAP_H, width: MINIMAP_W, padding: 0 }}
+    >
       <canvas
         ref={canvasRef}
         role="img"
         aria-label="Minimap"
         className="tlui-minimap__canvas"
-        style={{ width: "100%", height: 176, cursor: "pointer" }}
+        // style={{ width: "100%", height: 176, cursor: "pointer" }}
+        style={{
+          width: MINIMAP_W,
+          height: MINIMAP_H,
+          cursor: "pointer",
+          display: "block",
+          padding: 2,
+        }}
         onPointerDown={handlePointerDown}
       />
     </div>
@@ -453,8 +291,12 @@ export function CustomNavigationPanel({
   return (
     <div
       data-navpanel="true"
-      className="tlui-navigation-panel"
-      style={{ position: "relative" }}
+      className="tlui-navigation-panel "
+      style={{
+        position: "relative",
+        height: isCollapsed ? 50 : MINIMAP_H,
+        width: isCollapsed ? 210 : MINIMAP_W,
+      }}
       onPointerDown={(e) => e.stopPropagation()}
       onPointerUp={(e) => e.stopPropagation()}
       onPointerMove={(e) => e.stopPropagation()}
@@ -559,20 +401,28 @@ export function CustomNavigationPanel({
                     style={{
                       width: 34,
                       height: 34,
-                      borderRadius: 10,
+                      // borderRadius: 10,
+                      borderRadius: active ? 12 : 10,
                       fontWeight: 800,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
                       padding: 0,
 
-                      // ✅ Strong, obvious active state
+                      // border: active
+                      //   ? `3px solid ${color}`
+                      //   : "1px solid rgba(0,0,0,0.12)",
                       border: active
                         ? `3px solid ${color}`
-                        : "1px solid rgba(0,0,0,0.12)",
+                        : `2px solid ${color}`,
+                      // background: active
+                      //   ? `${color}22`
+                      //   : "rgba(255,255,255,0.92)",
                       background: active
                         ? `${color}22`
-                        : "rgba(255,255,255,0.92)",
+                        : `rgba(255,255,255,0.92)`,
+
+                      // boxShadow: active ? `0 0 0 2px ${color}22` : "none",
                       boxShadow: active ? `0 0 0 2px ${color}22` : "none",
                     }}
                   >
