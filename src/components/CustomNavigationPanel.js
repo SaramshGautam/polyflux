@@ -50,6 +50,7 @@ function drawMinimap({
   drawShapeIds, // ✅ new: actually drawn
   shapeActorIdByShapeId,
   actorColorByActorId,
+  selectedActorSet,
 }) {
   if (!canvas) return null;
   const ctx = canvas.getContext("2d");
@@ -100,12 +101,46 @@ function drawMinimap({
     const h = Math.max(2, b.h * s);
 
     const actorId = shapeActorIdByShapeId?.[id] || null;
-    const color = actorId ? actorColorByActorId.get(actorId) : null;
+    const hasSelection = selectedActorSet && selectedActorSet.size > 0;
+    const isSelected = actorId && hasSelection && selectedActorSet.has(actorId);
 
-    ctx.strokeStyle = color || "rgba(0,0,0,0.35)";
-    if (color) {
-      ctx.fillStyle = `${color}14`;
-      ctx.fillRect(x, y, w, h);
+    // const color = actorId ? actorColorByActorId.get(actorId) : null;
+    const baseColor = actorId ? actorColorByActorId.get(actorId) : null;
+
+    // const mutedStroke = "rgba(0,0,0,0.35)";
+    // const mutedFill = "rgba(0,0,0,0.06)";
+
+    const mutedStroke = baseColor
+      ? `${baseColor}26`
+      : "rgba(141, 135, 135, 0.15)";
+    const mutedFill = baseColor ? `${baseColor}0` : "rgba(146, 142, 142, 0.06)";
+
+    const stroke = hasSelection
+      ? isSelected
+        ? baseColor || "rgba(175, 169, 169, 0.15)"
+        : mutedStroke
+      : baseColor || "rgba(134, 131, 131, 0.05)";
+
+    // ctx.strokeStyle = color || "rgba(0,0,0,0.35)";
+    ctx.strokeStyle = stroke;
+    // if (color) {
+    //   ctx.fillStyle = `${color}14`;
+    //   ctx.fillRect(x, y, w, h);
+    // }
+    if (hasSelection) {
+      if (isSelected && baseColor) {
+        ctx.fillStyle = `${baseColor}18`; // highlight
+        ctx.fillRect(x, y, w, h);
+      } else {
+        ctx.fillStyle = mutedFill; // keep visible but muted
+        ctx.fillRect(x, y, w, h);
+      }
+    } else {
+      // no selection: keep your current behavior
+      if (baseColor) {
+        ctx.fillStyle = `${baseColor}14`;
+        ctx.fillRect(x, y, w, h);
+      }
     }
     ctx.strokeRect(x, y, w, h);
   }
@@ -143,18 +178,20 @@ function ActorFilteredMinimap({
     [selectedActorIds]
   );
 
-  const filteredShapeIds = useMemo(() => {
-    if (!selectedActorIds || selectedActorIds.length === 0) {
-      return shapes.map((s) => s.id);
-    }
+  const drawShapeIds = useMemo(() => shapes.map((s) => s.id), [shapes]);
 
-    return shapes
-      .map((s) => s.id)
-      .filter((id) => {
-        const actorId = shapeActorIdByShapeId?.[id];
-        return actorId && selectedSet.has(actorId);
-      });
-  }, [shapes, selectedActorIds, selectedSet, shapeActorIdByShapeId]);
+  // const filteredShapeIds = useMemo(() => {
+  //   if (!selectedActorIds || selectedActorIds.length === 0) {
+  //     return shapes.map((s) => s.id);
+  //   }
+
+  //   return shapes
+  //     .map((s) => s.id)
+  //     .filter((id) => {
+  //       const actorId = shapeActorIdByShapeId?.[id];
+  //       return actorId && selectedSet.has(actorId);
+  //     });
+  // }, [shapes, selectedActorIds, selectedSet, shapeActorIdByShapeId]);
 
   const actorColorByActorId = useMemo(
     () => buildActorColorMap(actorOptions || []),
@@ -176,18 +213,21 @@ function ActorFilteredMinimap({
       editor,
       canvas,
       allShapeIds, // ✅ stable framing
-      drawShapeIds: filteredShapeIds, // ✅ filtered drawing
+      // drawShapeIds: filteredShapeIds, // ✅ filtered drawing
+      drawShapeIds,
       shapeActorIdByShapeId,
       actorColorByActorId,
+      selectedActorSet: selectedSet,
     });
 
     transformRef.current = t;
   }, [
     editor,
     allShapeIds,
-    filteredShapeIds,
+    drawShapeIds,
     shapeActorIdByShapeId,
     actorColorByActorId,
+    selectedSet,
   ]);
 
   const handlePointerDown = (e) => {
