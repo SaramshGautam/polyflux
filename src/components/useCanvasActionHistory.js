@@ -1,5 +1,5 @@
 // src/history/useCanvasActionHistory.js
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   collection,
   query,
@@ -9,27 +9,81 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebaseConfig";
 
+/**
+ * Normalize common timestamp shapes into ISO string.
+ * Supports Firestore Timestamp, Date, or ISO string.
+ */
 export function normalizeHistoryTimestamp(rawTs) {
   if (!rawTs) return null;
-  if (rawTs.toDate) return rawTs.toDate().toISOString();
-  if (typeof rawTs === "string") return rawTs;
+
+  // Firestore Timestamp
+  if (typeof rawTs?.toDate === "function") {
+    try {
+      return rawTs.toDate().toISOString();
+    } catch {
+      return null;
+    }
+  }
+
   if (rawTs instanceof Date) return rawTs.toISOString();
+  if (typeof rawTs === "string") return rawTs;
+
   return null;
 }
 
-export function useCanvasActionHistory({ className, projectName, teamName }) {
+function normalizeHistoryRow(docSnap) {
+  const data = docSnap.data?.() ?? {};
+  const ts = normalizeHistoryTimestamp(data.createdAt);
+
+  const verb = data.verb || data.action || "updated";
+
+  return {
+    id: docSnap.id,
+    userId: data.actorId || data.userId || "Unknown User",
+    verb,
+    action: verb, // backward compat
+    shapeType: data.shapeType || "shape",
+    shapeId: data.shapeId || "",
+    text: data.textPreview || data.text || "",
+    imageUrl: data.imageUrl || "",
+    timestamp: ts,
+    // Keep the raw createdAt if you ever want to sort locally:
+    // createdAt: data.createdAt ?? null,
+  };
+}
+
+/**
+ * @typedef {Object} UseCanvasActionHistoryArgs
+ * @property {string} className
+ * @property {string} projectName
+ * @property {string} teamName
+ * @property {boolean} [enabled=true]
+ * @property {number} [maxResults=300]
+ */
+
+/**
+ * Firestore live action history stream for a team canvas.
+ * @param {UseCanvasActionHistoryArgs} args
+ */
+export function useCanvasActionHistory({
+  className,
+  projectName,
+  teamName,
+  enabled = true,
+  maxResults = 300,
+}) {
   const [actionHistory, setActionHistory] = useState([]);
 
-  // Optional: keep a manual refresh function (now it just relies on live stream)
+  // Keep for API compatibility (your app may call it).
   const fetchActionHistory = useCallback(async () => {
-    // no-op when using onSnapshot (kept for API compatibility)
+    // no-op (onSnapshot is the source of truth)
     return;
   }, []);
 
-  useEffect(() => {
-    if (!className || !projectName || !teamName) return;
+  const actionsRef = useMemo(() => {
+    if (!className || !projectName || !teamName) return null;
 
-    const actionsRef = collection(
+    return collection(
       db,
       "classrooms",
       className,
@@ -39,29 +93,29 @@ export function useCanvasActionHistory({ className, projectName, teamName }) {
       teamName,
       "actions"
     );
+  }, [className, projectName, teamName]);
 
-    const q = query(actionsRef, orderBy("createdAt", "desc"), limit(300));
+  useEffect(() => {
+    // If params are missing or hook disabled, clear and do nothing.
+    if (!enabled || !actionsRef) {
+      setActionHistory([]);
+      return;
+    }
+
+    const q = query(
+      actionsRef,
+      orderBy("createdAt", "desc"),
+      limit(maxResults)
+    );
 
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const rows = snap.docs.map((docSnap) => {
-          const data = docSnap.data();
+        const rows = snap.docs.map(normalizeHistoryRow);
 
-          const ts = normalizeHistoryTimestamp(data.createdAt);
-
-          return {
-            id: docSnap.id,
-            userId: data.actorId || data.userId || "Unknown User",
-            verb: data.verb || data.action || "updated",
-            action: data.verb || data.action || "updated", // backward compat
-            shapeType: data.shapeType || "shape",
-            shapeId: data.shapeId || "",
-            text: data.textPreview || data.text || "",
-            imageUrl: data.imageUrl || "",
-            timestamp: ts,
-          };
-        });
+        // If you ever see weird ordering due to missing createdAt,
+        // you can optionally enforce sorting here using timestamp.
+        // rows.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
 
         setActionHistory(rows);
       },
@@ -71,13 +125,20 @@ export function useCanvasActionHistory({ className, projectName, teamName }) {
     );
 
     return () => unsub();
-  }, [className, projectName, teamName]);
+  }, [enabled, actionsRef, maxResults]);
 
-  // If you do Firestore subscription, you generally should NOT optimistic-append
-  // (otherwise you’ll see duplicates).
+  /**
+   * Optional optimistic append.
+   * Dedupe by `id` to avoid duplicates when Firestore snapshot arrives.
+   */
   const appendHistoryEntry = useCallback((entry) => {
-    // optional: keep disabled or dedupe by id if you really want optimistic updates
-    setActionHistory((prev) => [entry, ...prev]);
+    if (!entry) return;
+
+    setActionHistory((prev) => {
+      const id = entry.id;
+      if (id && prev.some((x) => x.id === id)) return prev;
+      return [entry, ...prev];
+    });
   }, []);
 
   return {

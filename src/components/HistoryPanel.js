@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import "../App.css";
 import { getIndefiniteArticle } from "../utils/GetIndefiniteArticle";
 
@@ -7,7 +7,7 @@ export default function HistoryPanel({
   onHistoryItemClick,
 }) {
   // Debug: log when actionHistory changes
-  React.useEffect(() => {
+  useEffect(() => {
     console.log("=== ActionHistory updated ===");
     actionHistory.forEach((e, i) => {
       console.log(`Entry #${i}`, e);

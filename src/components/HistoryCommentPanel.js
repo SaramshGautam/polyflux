@@ -74,10 +74,10 @@ const HistoryCommentPanel = ({
       ></button>
 
       {/* Toggle between History and Comment view */}
-      <ToggleButtonGroup
+      {/* <ToggleButtonGroup
         isViewingHistory={isViewingHistory}
         setIsViewingHistory={handleViewChange}
-      />
+      /> */}
 
       {/* Scrollable Content */}
       <div

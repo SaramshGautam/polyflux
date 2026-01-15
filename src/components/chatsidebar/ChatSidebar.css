@@ -1,5 +1,5 @@
 .chat-sidebar {
-  position: fixed;
+  position: absolute;
   top: 0;
   right: -400px;
   width: 400px;

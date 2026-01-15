@@ -56,8 +56,6 @@ export default function CustomContextMenu({
     "anon";
 
   const [showCommentBox, setShowCommentBox] = useState(false);
-  // const [comments, setComments] = useState({});
-  // const [actionHistory, setActionHistory] = useState([]);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
   const { className, projectName, teamName } = useParams();
   const [showAIInput, setShowAIInput] = useState(false);
@@ -375,14 +373,60 @@ export default function CustomContextMenu({
       });
     };
 
-    const shapeCreateHandler = editor.sideEffects.registerAfterCreateHandler(
-      "shape",
-      logShapeAddition
+    // ✅ Only log adds/deletes that come from the LOCAL user's actions
+    const unlistenUserAddsDeletes = editor.store.listen(
+      (entry) => {
+        // With { scope: "user" }, this should already be local-only,
+        // but keep this guard anyway if tldraw ever changes semantics.
+        if (entry?.source && entry.source !== "user") return;
+
+        const added = entry?.changes?.added
+          ? Object.values(entry.changes.added)
+          : [];
+        const removed = entry?.changes?.removed
+          ? Object.values(entry.changes.removed)
+          : entry?.changes?.deleted
+          ? Object.values(entry.changes.deleted)
+          : [];
+
+        // Added records -> log "added" once per shape
+        for (const rec of added) {
+          const isShapeRecord =
+            rec?.typeName === "shape" ||
+            rec?.type === "shape" ||
+            rec?.kind === "shape";
+          if (!isShapeRecord) continue;
+
+          const shape = editor.getShape(rec.id);
+          if (!shape) continue;
+
+          // IMPORTANT: log only local creates (scope=user should enforce this)
+          logShapeAddition(shape);
+        }
+
+        // Removed records -> log "deleted" once per shape
+        for (const rec of removed) {
+          const isShapeRecord =
+            rec?.typeName === "shape" ||
+            rec?.type === "shape" ||
+            rec?.kind === "shape";
+          if (!isShapeRecord) continue;
+
+          // Your existing handler expects { id: <shapeId> }
+          handleShapeDeletion({ id: rec.id });
+        }
+      }
+      // { scope: "user" }
     );
-    const shapeDeleteHandler = editor.sideEffects.registerAfterDeleteHandler(
-      "shape",
-      handleShapeDeletion
-    );
+
+    // const shapeCreateHandler = editor.sideEffects.registerAfterCreateHandler(
+    //   "shape",
+    //   logShapeAddition
+    // );
+    // const shapeDeleteHandler = editor.sideEffects.registerAfterDeleteHandler(
+    //   "shape",
+    //   handleShapeDeletion
+    // );
 
     const shapeUpdateHandler = editor.sideEffects.registerAfterChangeHandler(
       "shape",
@@ -422,8 +466,9 @@ export default function CustomContextMenu({
     );
 
     return () => {
-      shapeCreateHandler();
-      shapeDeleteHandler();
+      // shapeCreateHandler();
+      // shapeDeleteHandler();
+      unlistenUserAddsDeletes?.();
       shapeUpdateHandler();
     };
   }, [editor, className, projectName, teamName]);

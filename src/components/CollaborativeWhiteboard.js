@@ -67,6 +67,10 @@ import ParticipationImbalance from "../assets/ParticipationImbalance.mp4";
 import DefaultMp4 from "../assets/Default.mp4";
 import { CustomNavigationPanel } from "./CustomNavigationPanel";
 import PhaseNudgeBadges from "./whiteboard/PhaseNudgeBadges";
+import { createNamedNoteShapeUtil } from "./NamedNoteShapeUtil";
+import { createNamedShapeUtils } from "./NamedShapeUtils";
+import { UserContext } from "./UserContext";
+
 import {
   resolveImageUrl,
   extractShapeText,
@@ -76,7 +80,11 @@ import {
 import { useProactiveNudges } from "./whiteboard/UseProactiveNudge";
 
 const CUSTOM_TOOLS = [MicrophoneTool];
-const SHAPE_UTILS = [...defaultShapeUtils, AudioShapeUtil];
+// const SHAPE_UTILS = [
+//   ...defaultShapeUtils.filter((u) => u.type !== "note"),
+//   NamedNoteShapeUtil,
+//   AudioShapeUtil,
+// ];
 const BINDING_UTILS = [...defaultBindingUtils];
 
 function useCameraPresence(
@@ -489,6 +497,70 @@ const CollaborativeWhiteboard = () => {
 
   const [robotPosition, setRobotPosition] = useState({ left: 16, bottom: 158 });
 
+  const actorLabelById = useMemo(() => {
+    const m = {};
+    (sessionActors || []).forEach((a) => {
+      // a.id is presence doc id (likely user.uid)
+      // but your createdBy might be "P4" etc — see note below.
+      m[a.id] = a.label || a.email || a.id;
+    });
+    return m;
+  }, [sessionActors]);
+
+  const shapeActorIdByShapeId = useShapeCreatedByMap(
+    db,
+    className,
+    projectName,
+    teamName
+  );
+
+  const shapeActorIdByShapeIdRef = useRef({});
+  useEffect(() => {
+    shapeActorIdByShapeIdRef.current = shapeActorIdByShapeId || {};
+  }, [shapeActorIdByShapeId]);
+
+  const actorLabelByIdRef = useRef({});
+  useEffect(() => {
+    actorLabelByIdRef.current = actorLabelById || {};
+  }, [actorLabelById]);
+
+  // const shapeUtilsMemo = useMemo(() => {
+  //   const getActorLabelForShape = (shapeId) => {
+  //     const actorId = shapeActorIdByShapeIdRef.current?.[shapeId];
+  //     if (!actorId) return null;
+  //     return actorLabelByIdRef.current?.[actorId] || actorId; // fallback to id
+  //   };
+
+  //   return [
+  //     ...defaultShapeUtils.filter((u) => u.type !== "note"),
+  //     createNamedNoteShapeUtil({ getActorLabelForShape }),
+  //     AudioShapeUtil,
+  //   ];
+  // }, []); // ✅ empty deps because refs update
+
+  const shapeUtilsMemo = useMemo(() => {
+    const getActorLabelForShape = (shapeId) => {
+      const actorId = shapeActorIdByShapeIdRef.current?.[shapeId];
+      if (!actorId) return null;
+      return actorLabelByIdRef.current?.[actorId] || actorId;
+    };
+
+    const { NamedNote, NamedText, NamedImage } = createNamedShapeUtils({
+      getActorLabelForShape,
+    });
+
+    return [
+      // remove the defaults for these types, then add your named ones
+      ...defaultShapeUtils.filter(
+        (u) => !["note", "text", "image"].includes(u.type)
+      ),
+      NamedNote,
+      NamedText,
+      NamedImage,
+      AudioShapeUtil,
+    ];
+  }, []); // keep empty deps since refs update
+
   useEffect(() => {
     if (!editorReady) return;
 
@@ -580,7 +652,7 @@ const CollaborativeWhiteboard = () => {
       (entry) => {
         if (stampingRef.current) return;
 
-        const actorId = actorIdRef.current;
+        const actorId = actorIdRef.current.displayName;
 
         const added = entry?.changes?.added
           ? Object.values(entry.changes.added)
@@ -993,7 +1065,7 @@ const CollaborativeWhiteboard = () => {
       : "",
     roomId: roomId || "",
     // store: customStore,
-    shapeUtils: SHAPE_UTILS,
+    shapeUtils: shapeUtilsMemo,
     bindingUtils: BINDING_UTILS,
   });
 
@@ -1285,13 +1357,6 @@ const CollaborativeWhiteboard = () => {
     []
   );
 
-  const shapeActorIdByShapeId = useShapeCreatedByMap(
-    db,
-    className,
-    projectName,
-    teamName
-  );
-
   const actorOptions = useMemo(() => {
     return (sessionActors || []).map((a) => ({
       id: a.id,
@@ -1441,10 +1506,10 @@ const CollaborativeWhiteboard = () => {
     actorOptionsRef.current = actorOptions;
   }, [actorOptions]);
 
-  const shapeActorIdByShapeIdRef = useRef(shapeActorIdByShapeId);
-  useEffect(() => {
-    shapeActorIdByShapeIdRef.current = shapeActorIdByShapeId;
-  }, [shapeActorIdByShapeId]);
+  // const shapeActorIdByShapeIdRef = useRef(shapeActorIdByShapeId);
+  // useEffect(() => {
+  //   shapeActorIdByShapeIdRef.current = shapeActorIdByShapeId;
+  // }, [shapeActorIdByShapeId]);
 
   // Recording UI bits (avoid re-creating Toolbar component)
   const elapsedRef = useRef(elapsed);
@@ -1827,6 +1892,20 @@ const CollaborativeWhiteboard = () => {
 
   const phaseClass = getPhaseClass();
 
+  const userCtxValue = useMemo(() => {
+    const u = auth.currentUser;
+    return {
+      actorId: u?.uid || u?.email || "anon",
+      actorName: u?.displayName || u?.email?.split("@")[0] || "Anonymous",
+      shapeActorIdByShapeId, // ✅ add it here
+    };
+  }, [
+    auth.currentUser?.uid,
+    auth.currentUser?.displayName,
+    auth.currentUser?.email,
+    shapeActorIdByShapeId,
+  ]);
+
   // const backgroundColor = getPhaseBackground();
 
   const toolsMemo = useMemo(() => [...defaultTools, ...CUSTOM_TOOLS], []);
@@ -1842,29 +1921,31 @@ const CollaborativeWhiteboard = () => {
         }`}
         style={{ position: "fixed", inset: 0 }}
       >
-        <Tldraw
-          onMount={(editor) => {
-            console.log("[Canvas] Tldraw onMount fired ✅", {
-              hasEditor: !!editor,
-              hasStore: !!editor?.store,
-              hasListen: !!editor?.store?.listen,
-            });
-            editorInstance.current = editor;
-            console.log("[Canvas] editorInstance.current set ✅", {
-              hasEditorRef: !!editorInstance.current,
-            });
-            setEditorReady(true);
-            // if (editorInstance) {
-            //   saveCanvasPreview();
-            // }
-          }}
-          store={store}
-          // schema={schema}
-          tools={toolsMemo}
-          shapeUtils={SHAPE_UTILS}
-          overrides={uiOverrides}
-          components={tldrawComponents}
-        />
+        <UserContext.Provider value={userCtxValue}>
+          <Tldraw
+            onMount={(editor) => {
+              console.log("[Canvas] Tldraw onMount fired ✅", {
+                hasEditor: !!editor,
+                hasStore: !!editor?.store,
+                hasListen: !!editor?.store?.listen,
+              });
+              editorInstance.current = editor;
+              console.log("[Canvas] editorInstance.current set ✅", {
+                hasEditorRef: !!editorInstance.current,
+              });
+              setEditorReady(true);
+              // if (editorInstance) {
+              //   saveCanvasPreview();
+              // }
+            }}
+            store={store}
+            // schema={schema}
+            tools={toolsMemo}
+            shapeUtils={shapeUtilsMemo}
+            overrides={uiOverrides}
+            components={tldrawComponents}
+          />
+        </UserContext.Provider>
 
         <RobotDock
           src={robotSrc}

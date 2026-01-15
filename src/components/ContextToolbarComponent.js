@@ -374,7 +374,7 @@ const ContextToolbarComponent = track(
         </div>
 
         {/* Render the CommentBox when the state is true */}
-        {showCommentBox && (
+        {/* {showCommentBox && (
           <CommentBox
             selectedShape={selectedShape}
             addComment={addComment}
@@ -384,7 +384,7 @@ const ContextToolbarComponent = track(
             fetchActionHistory={fetchActionHistory}
             // logAction={logAction}
           />
-        )}
+        )} */}
       </div>
     );
   }
