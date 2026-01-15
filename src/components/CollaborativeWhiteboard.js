@@ -1815,7 +1815,7 @@ const CollaborativeWhiteboard = () => {
 
       return (
         <DefaultToolbar {...props}>
-          <button
+          {/* <button
             type="button"
             className="tlui-button tlui-button--icon"
             aria-pressed={isMicSelected}
@@ -1853,7 +1853,7 @@ const CollaborativeWhiteboard = () => {
             ) : (
               <FontAwesomeIcon icon={faMicrophone} style={{ fontSize: 16 }} />
             )}
-          </button>
+          </button> */}
 
           <DefaultToolbarContent />
         </DefaultToolbar>
