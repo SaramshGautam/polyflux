@@ -1,4 +1,3 @@
-// src/shapes/AudioShapeUtil.js
 import React, { useEffect, useMemo, useRef } from "react";
 import {
   BaseBoxShapeUtil,
@@ -9,8 +8,8 @@ import {
 } from "tldraw";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
-  faPlay,
-  faPause,
+  // faPlay,
+  // faPause,
   faVolumeXmark,
   faVolumeUp,
 } from "@fortawesome/free-solid-svg-icons";
