@@ -162,7 +162,7 @@ const LoginPage = () => {
       addMessage("success", "Welcome! Redirecting to the whiteboard...");
 
       const studyId = userData.studyId || "Eval3333";
-      const taskName = userData.taskName || "Plan a vacation in United States";
+      const taskName = userData.taskName || "ConditionC2";
       const teamId = userData.teamId || "TeamF";
 
       navigate(
