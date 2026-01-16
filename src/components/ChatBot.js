@@ -5,6 +5,8 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import Draggable from "react-draggable";
 import { storage } from "../firebaseConfig";
 import { ref as sRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { db } from "../firebaseConfig";
+import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { getAuth, signInAnonymously } from "firebase/auth";
 import { Rnd } from "react-rnd";
 import {
@@ -317,6 +319,96 @@ const ChatBot = ({
   const shellThemeTokenRef = useRef(0);
   const shellThemeTimeoutRef = useRef(null);
 
+  const sessionIdRef = useRef(
+    `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
+
+  const redactText = (s = "", max = 5000) => {
+    // Avoid logging huge payloads or secrets; tune as you like.
+    const str = String(s || "");
+    return str.length > max ? str.slice(0, max) + "…[truncated]" : str;
+  };
+
+  const logBotEvent = async (eventName, payload = {}) => {
+    try {
+      // Identify user consistently:
+      const auth = getAuth();
+      const uid = auth.currentUser?.uid || null;
+
+      // const safeCanvasId = String(canvasId || "unknown").replace(/_/g, "/");
+      const toCanvasPath = (flatId) => {
+        const raw = String(flatId || "").trim();
+
+        // Expect: <condition>_<project>_<team>
+        const parts = raw.split("_");
+        const classroom = parts[0] || "unknown";
+        const team = parts.length >= 2 ? parts[parts.length - 1] : "unknown";
+        const project =
+          parts.length >= 3 ? parts.slice(1, -1).join("_") : "unknown";
+
+        return `/${classroom}/Projects/${project}/teams/${team}/`;
+      };
+
+      const toFirestoreDocId = (flatId) =>
+        String(flatId || "unknown").replace(/[^\w.@-]/g, "_"); // keep it safe
+
+      // Basic envelope
+      const doc = {
+        event: String(eventName || "unknown"),
+        createdAt: serverTimestamp(),
+        clientTs: Date.now(), // useful for ordering even if offline
+        canvasId: toCanvasPath(canvasId) || null,
+        appUserId: user_id || null, // your own user_id
+        firebaseUid: uid,
+        role: role || null,
+        variant: variant || null,
+        sessionId: sessionIdRef.current,
+
+        // Keep payload small + safe
+        payload: payload,
+        // Optional: user agent / page info
+        meta: {
+          href: typeof window !== "undefined" ? window.location.href : null,
+        },
+      };
+
+      console.log("[bot-log] logging event:", doc);
+      // Firestore path: canvases/{canvasId}/bot_logs
+      // const col = collection(db, String(safeCanvasId || "unknown"), "bot_logs");
+      // const col = collection(
+      //   db,
+      //   "classrooms",
+      //   canvasId || "unknown",
+      //   "bot_logs"
+      // );
+
+      // const canvasDocId = toFirestoreDocId(canvasId);
+      // const col = collection(db, "canvases", canvasDocId, "bot_logs");
+
+      const flatId = String(canvasId || "unknown");
+      const parts = flatId.split("_");
+      const classroom = parts[0] || "unknown";
+      const team = parts.at(-1) || "unknown";
+      const project = parts.slice(1, -1).join("_") || "unknown";
+
+      const col = collection(
+        db,
+        "classrooms",
+        classroom,
+        "Projects",
+        project,
+        "teams",
+        team,
+        "bot_logs"
+      );
+
+      await addDoc(col, doc);
+    } catch (e) {
+      // Don’t break UX if logging fails
+      console.warn("[bot-log] failed:", e);
+    }
+  };
+
   const setShellThemeTemporarily = (theme, ms = 30_000) => {
     const token = Date.now();
     shellThemeTokenRef.current = token;
@@ -594,8 +686,25 @@ const ChatBot = ({
       window.removeEventListener("trigger-chatbot", handleExternalTrigger);
   }, [setMessages]);
 
+  useEffect(() => {
+    if (forceOpen) {
+      setIsOpen(true);
+      logBotEvent("bot_open_force", {});
+    }
+  }, [forceOpen]);
+
   const handleChipClick = async (chip, roleType, nudgeMsg) => {
     console.log("Chip clicked with nudgeMsg:", { chip, roleType, nudgeMsg });
+
+    await logBotEvent("chip_click", {
+      chip: redactText(chip, 300),
+      role: String(roleType || "").toLowerCase(),
+      triggerId: nudgeMsg?.meta?.triggerId || null,
+      phase: nudgeMsg?.meta?.phase || null,
+      tailShapeIdsCount: Array.isArray(nudgeMsg?.meta?.tailShapeIds)
+        ? nudgeMsg.meta.tailShapeIds.length
+        : 0,
+    });
 
     // --- 1. Build context from the nudge meta + tail shapes ---
     let nudgeContext = {};
@@ -817,6 +926,12 @@ const ChatBot = ({
   const runAnalyzeNudge = async (source = "auto") => {
     if (!shapes || !Array.isArray(shapes) || shapes.length === 0) return;
 
+    if (source === "auto") {
+      await logBotEvent("auto_nudge_analyze_start", {
+        shapesCount: shapes.length,
+      });
+    }
+
     const now = Date.now();
     const last = lastAnalyzeRef.current || {
       time: 0,
@@ -952,6 +1067,17 @@ const ChatBot = ({
         );
         return;
       }
+
+      await logBotEvent("nudge_result", {
+        source,
+        phase,
+        meanConf,
+        stablePhase,
+        triggerId: trigger?.id || null,
+        triggerLabel: trigger?.label || null,
+        chipsCount: Array.isArray(chips) ? chips.length : 0,
+        tailShapeIdsCount: tailShapeIds.length,
+      });
 
       // For button mode: tell the user if it’s too noisy
       if (source === "button" && (!stablePhase || !confidenceHigh)) {
@@ -1109,7 +1235,14 @@ const ChatBot = ({
     }
   };
 
-  const handleRequestNudges = () => runAnalyzeNudge("button");
+  // const handleRequestNudges = () => runAnalyzeNudge("button");
+
+  const handleRequestNudges = async () => {
+    await logBotEvent("request_nudge_button", {
+      shapesCount: shapes?.length || 0,
+    });
+    return runAnalyzeNudge("button");
+  };
 
   const toggleNudgeExpand = (idx) => {
     setMessages((prev) =>
@@ -1130,6 +1263,13 @@ const ChatBot = ({
         attached_texts: context.texts,
       },
     ];
+
+    await logBotEvent("send_message", {
+      text: redactText(userInput),
+      hasImages: (context.images || []).length,
+      hasTexts: (context.texts || []).length,
+      targetsCount: (targets || []).length,
+    });
 
     const history = buildHistoryForBackend(newMessages);
 
@@ -1163,6 +1303,12 @@ const ChatBot = ({
       );
 
       const data = await response.json();
+
+      await logBotEvent("bot_reply", {
+        replyPreview: redactText(data.reply, 1000),
+        imageCount: Array.isArray(data.image_urls) ? data.image_urls.length : 0,
+        b64Count: Array.isArray(data.images_b64) ? data.images_b64.length : 0,
+      });
 
       if (data.reply) {
         let imageUrlsFinal = [];
@@ -1601,6 +1747,7 @@ const ChatBot = ({
       await navigator.clipboard.writeText(text || "");
       badgePing(key);
       notifyCanvas({ kind: "text", content: text || "" });
+      await logBotEvent("copy_text", { key, length: (text || "").length });
     } catch (e) {
       console.error("Copy text failed:", e);
     }
@@ -1630,6 +1777,7 @@ const ChatBot = ({
         badgePing(key);
         notifyCanvas({ kind: "image-url", content: url });
       }
+      await logBotEvent("copy_image", { key, url: redactText(url, 800) });
     } catch (err) {
       console.error("Image copy failed, falling back to URL:", err);
       try {
@@ -1684,6 +1832,7 @@ const ChatBot = ({
               className="chatbot-header-btn"
               // onClick={() => setIsOpen(false)}
               onClick={() => {
+                logBotEvent("bot_close", { variant });
                 if (variant === "floating") {
                   setIsOpen(false);
                   onClose?.();
