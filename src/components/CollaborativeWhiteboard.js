@@ -1523,7 +1523,6 @@ const CollaborativeWhiteboard = () => {
       if (source === "proactive") {
         const now = Date.now();
         if (now < autoGlobalCooldownUntilRef.current) {
-          // Return a "no-op" result that normalizeAnalyzeResponse will treat as no trigger
           return { trigger: null, skipped: "global_cooldown" };
         }
       }
