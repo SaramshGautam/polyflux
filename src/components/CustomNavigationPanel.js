@@ -36,7 +36,9 @@ function buildActorColorMap(actorOptions) {
   const map = new Map();
 
   actorOptions.forEach((a, i) => {
-    const actorKey = a.label || a.id;
+    // const actorKey = a.label || a.id;
+    // map.set(actorKey, palette[i % palette.length]);
+    const actorKey = a._actorKey || getActorKey(a);
     map.set(actorKey, palette[i % palette.length]);
   });
 
@@ -289,6 +291,35 @@ function ActorFilteredMinimap({
   );
 }
 
+function normalizeActorKey(k) {
+  return (k ?? "").toString().trim(); // optionally: .toLowerCase()
+}
+
+// Choose ONE identity rule and use it everywhere.
+// If you have a stable UID (recommended), prefer it.
+function getActorKey(a) {
+  // Best: stable auth UID / participantId if you have it:
+  // return normalizeActorKey(a.uid || a.participantId || a.id || a.label);
+
+  // Your current behavior (label OR id), but normalized:
+  return normalizeActorKey(a.label || a.id);
+}
+
+function dedupeActors(actorOptions) {
+  const seen = new Set();
+  const out = [];
+
+  for (const a of actorOptions || []) {
+    const key = getActorKey(a);
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ...a, _actorKey: key }); // cache key for reuse
+  }
+
+  return out;
+}
+
 /**
  * CustomNavigationPanel
  * - Collapsed: ONLY chevron + zoom controls
@@ -301,10 +332,14 @@ export function CustomNavigationPanel({
 }) {
   const editor = useEditor();
 
-  const actors = useMemo(
-    () => actorOptions.slice(0, maxActors),
-    [actorOptions, maxActors]
-  );
+  // const actors = useMemo(
+  //   () => actorOptions.slice(0, maxActors),
+  //   [actorOptions, maxActors]
+  // );
+  const actors = useMemo(() => {
+    const unique = dedupeActors(actorOptions);
+    return unique.slice(0, maxActors);
+  }, [actorOptions, maxActors]);
 
   const [selectedActorIds, setSelectedActorIds] = useState([]);
   const [isCollapsed, setIsCollapsed] = useState(true);
@@ -422,7 +457,8 @@ export function CustomNavigationPanel({
 
               {/* participant buttons */}
               {actors.map((a) => {
-                const actorKey = a.label || a.id; // ✅ same key used everywhere
+                // const actorKey = a.label || a.id;
+                const actorKey = a._actorKey || getActorKey(a);
                 const active = selectedActorIds.includes(actorKey);
 
                 // ✅ color based on actorKey (now matches the map)
