@@ -303,7 +303,8 @@ const ChatBot = ({
   onClose,
 }) => {
   const [userInput, setUserInput] = useState("");
-  const [isOpen, setIsOpen] = useState(variant === "floating");
+  // const [isOpen, setIsOpen] = useState(variant === 'floating');
+  const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [clipNotes, setClipNotes] = useState([]);
   const [isSelectingFromCanvas, setIsSelectingFromCanvas] = useState(false);
@@ -527,7 +528,7 @@ const ChatBot = ({
 
   useEffect(() => {
     if (externalMessages && externalMessages.length > 0) {
-      setIsOpen(true);
+      // setIsOpen(true);
       setMessages((prev) => [...prev, ...externalMessages]);
     }
   }, [externalMessages, setMessages]);
