@@ -209,7 +209,13 @@ function AudioShapeView({ util, shape }) {
       el.removeEventListener("error", onError);
       el.removeEventListener("canplay", onCanPlay);
     };
-  }, [editor, shape.id, shape.props.src, shape.props.duration]);
+  }, [
+    editor,
+    shape.id,
+    shape.props.src,
+    shape.props.duration,
+    shape.props.currentTime,
+  ]);
 
   const togglePlay = async (e) => {
     console.log("🔴 BUTTON CLICKED - togglePlay called!"); // This should appear
