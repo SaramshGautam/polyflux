@@ -534,7 +534,7 @@ const ChatBot = ({
   }, [externalMessages, setMessages]);
 
   useEffect(() => {
-    const handleExternalTrigger = (e) => {
+    const handleExternalTrigger = async (e) => {
       const detail = e.detail || {};
       const {
         snippet,
@@ -664,6 +664,22 @@ const ChatBot = ({
 
       const theme = resolvedPhase ? getPhaseTheme(resolvedPhase) : "neutral";
 
+      // ✅ Log: proactive nudge appeared in chat
+      await logBotEvent("proactive_nudge_shown", {
+        role: resolvedType,
+        phase: resolvedPhase || null,
+        chipsCount: Array.isArray(resolvedChips) ? resolvedChips.length : 0,
+        triggerId: meta?.triggerId || meta?.trigger?.id || null,
+        triggerLabel: meta?.triggerLabel || meta?.trigger?.label || null,
+        source: source || "trigger-chatbot",
+        hasSnippet: !!snippet,
+        textPreview: redactText(messageText, 300),
+        dedupeKey: dedupeKey || null,
+        tailShapeIdsCount: Array.isArray(meta?.tailShapeIds)
+          ? meta.tailShapeIds.length
+          : 0,
+      });
+
       setMessages((prev) => [
         ...prev,
         {
@@ -705,6 +721,12 @@ const ChatBot = ({
       tailShapeIdsCount: Array.isArray(nudgeMsg?.meta?.tailShapeIds)
         ? nudgeMsg.meta.tailShapeIds.length
         : 0,
+      chipIndex: Array.isArray(nudgeMsg?.chips)
+        ? nudgeMsg.chips.indexOf(chip)
+        : -1,
+      chipsCount: Array.isArray(nudgeMsg?.chips) ? nudgeMsg.chips.length : 0,
+      nudgeSource: nudgeMsg?.meta?.source || null,
+      messageType: nudgeMsg?.type || nudgeMsg?.role || null,
     });
 
     // --- 1. Build context from the nudge meta + tail shapes ---
@@ -1198,6 +1220,25 @@ const ChatBot = ({
       }
       const msgTheme = getPhaseTheme(phase);
 
+      // ✅ Log: analyze nudge appeared in chat
+      await logBotEvent("nudge_shown", {
+        source, // "auto" or "button"
+        phase,
+        meanConf: meanConf ?? null,
+        stablePhase,
+        triggerId: trigger?.id || null,
+        triggerLabel: trigger?.label || null,
+        role: nudgeType,
+        chipsCount: Array.isArray(chips) ? chips.length : 0,
+        tailShapeIdsCount: Array.isArray(tailShapeIds)
+          ? tailShapeIds.length
+          : 0,
+        windowCount: Array.isArray(current_phase?.window_ids)
+          ? current_phase.window_ids.length
+          : 0,
+        textPreview: redactText(nudgeText, 300),
+      });
+
       setMessages((prev) => [
         ...prev,
         {
@@ -1245,7 +1286,30 @@ const ChatBot = ({
     return runAnalyzeNudge("button");
   };
 
-  const toggleNudgeExpand = (idx) => {
+  // const toggleNudgeExpand = (idx) => {
+  //   setMessages((prev) =>
+  //     prev.map((m, i) => (i === idx ? { ...m, expanded: !m.expanded } : m))
+  //   );
+  // };
+
+  const toggleNudgeExpand = async (idx) => {
+    const msg = messages?.[idx];
+    const nextExpanded = !msg?.expanded;
+
+    await logBotEvent("nudge_toggle", {
+      expanded: nextExpanded,
+      msgIndex: idx,
+      role: msg?.type || null,
+      phase: msg?.meta?.phase || null,
+      triggerId: msg?.meta?.triggerId || null,
+      triggerLabel: msg?.meta?.triggerLabel || null,
+      chipsCount: Array.isArray(msg?.chips) ? msg.chips.length : 0,
+      tailShapeIdsCount: Array.isArray(msg?.meta?.tailShapeIds)
+        ? msg.meta.tailShapeIds.length
+        : 0,
+      source: msg?.meta?.source || null,
+    });
+
     setMessages((prev) =>
       prev.map((m, i) => (i === idx ? { ...m, expanded: !m.expanded } : m))
     );
