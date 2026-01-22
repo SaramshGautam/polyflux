@@ -65,7 +65,7 @@ const ContextToolbarComponent = track(
         db,
         "classrooms",
         className,
-        "Project",
+        "Projects",
         projectName,
         "teams",
         teamName,
