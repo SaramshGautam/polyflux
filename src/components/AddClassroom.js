@@ -35,7 +35,7 @@ const AddClassroom = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!className || !courseId || !semester || !studentFile) {
+    if (!className || !courseId || !semester) {
       setError("Please provide all required details.");
       return;
     }
@@ -44,7 +44,9 @@ const AddClassroom = () => {
     formData.append("class_name", className);
     formData.append("course_id", courseId);
     formData.append("semester", semester);
-    formData.append("student_file", studentFile);
+    if (studentFile) {
+      formData.append("student_file", studentFile);
+    }
     formData.append("role", role);
     formData.append("userEmail", userEmail);
 
@@ -84,7 +86,10 @@ const AddClassroom = () => {
   };
 
   return (
-    <div className="container mt-4 d-flex justify-content-center">
+    <div
+      className="container mt-8 d-flex justify-content-center"
+      style={{ marginTop: "5rem" }}
+    >
       <div className="form-container">
         <h1 className="form-title">Add New Classroom</h1>
 
@@ -153,7 +158,6 @@ const AddClassroom = () => {
                 className="form-control"
                 accept=".csv, .xls, .xlsx"
                 onChange={handleFileChange}
-                required
               />
             </div>
           </div>

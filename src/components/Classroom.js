@@ -33,11 +33,22 @@ const Classroom = () => {
         // Fetch projects for the classroom
         const projectsRef = collection(db, "classrooms", className, "Projects");
         const querySnapshot = await getDocs(projectsRef);
-        const projectsData = querySnapshot.docs.map((doc) => ({
-          projectName: doc.data().projectName,
-          description: doc.data().description,
-          dueDate: doc.data().dueDate,
-        }));
+        // const projectsData = querySnapshot.docs.map((doc) => ({
+
+        //   projectName: doc.data().projectName,
+        //   description: doc.data().description,
+        //   dueDate: doc.data().dueDate,
+        // }));
+
+        const projectsData = querySnapshot.docs.map((docSnap) => {
+          const data = docSnap.data();
+
+          return {
+            projectName: data.projectName || docSnap.id,
+            description: data.description || "",
+            dueDate: data.dueDate || null,
+          };
+        });
 
         setProjects(projectsData);
         setLoading(false);
@@ -95,16 +106,24 @@ const Classroom = () => {
                   )
                 }
               >
-                <h5>{project.projectName}</h5>
+                <h5>{project.projectName || "Untitled Project"}</h5>
+
                 <p className="project-description">
                   <strong>Description:</strong>{" "}
-                  {project.description.length > 100
-                    ? `${project.description.substring(0, 100)}...`
-                    : project.description}
+                  {project.description
+                    ? project.description.length > 100
+                      ? `${project.description.substring(0, 100)}...`
+                      : project.description
+                    : "No description provided."}
                 </p>
+
                 <p className="project-due-date">
                   <strong>Due Date:</strong>{" "}
-                  {new Date(project.dueDate).toLocaleDateString()}
+                  {project.dueDate
+                    ? project.dueDate.toDate
+                      ? project.dueDate.toDate().toLocaleDateString()
+                      : new Date(project.dueDate).toLocaleDateString()
+                    : "No due date"}
                 </p>
               </div>
             ))
@@ -114,11 +133,18 @@ const Classroom = () => {
         </div>
       )}
 
-      <button
+      {/* <button
         className="btn back-btn mt-3"
         onClick={() =>
           navigate(role === "teacher" ? "/teachers-home" : "/students-home")
         }
+      >
+        <i className="bi bi-arrow-left"></i> Back to Dashboard
+      </button> */}
+
+      <button
+        className="btn back-btn mt-3"
+        onClick={() => navigate("/dashboard")}
       >
         <i className="bi bi-arrow-left"></i> Back to Dashboard
       </button>

@@ -18,7 +18,8 @@ const Project = () => {
   const [projectDetails, setProjectDetails] = useState({});
   const [teams, setTeams] = useState([]);
   const [studentTeamAssigned, setStudentTeamAssigned] = useState(null);
-  const [role, setRole] = useState(localStorage.getItem("role"));
+  // const [role, setRole] = useState(localStorage.getItem("role"));
+  const [role, setRole] = useState(localStorage.getItem("role") || "teacher");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -177,7 +178,7 @@ const Project = () => {
                 };
               }
             } catch (e) {
-              console.warn("Error fetching presence for team", teamDoc.id, e);
+              console.log("Error fetching presence for team", teamDoc.id, e);
             }
 
             return {
@@ -188,6 +189,13 @@ const Project = () => {
             };
           })
         );
+
+        console.log("Project page role:", role);
+        console.log(
+          "Project page userEmail:",
+          localStorage.getItem("userEmail")
+        );
+        console.log("Fetched teams:", teamsData);
 
         setTeams(teamsData);
 

@@ -19,6 +19,8 @@ import Team from "./components/Team";
 import InactivityMonitor from "./components/InactivityMonitor";
 import CollaborativeWhiteboard from "./components/CollaborativeWhiteboard";
 import ExportMovesPanel from "./components/ExportMovesPanel";
+import MyWhiteboardsPage from "./components/MyWhiteboardsPage";
+import DashboardRouter from "./components/pages/DashboardRouter";
 
 import FinishSignIn from "./components/FinishSignIn";
 import AddUser from "./utils/AddUser";
@@ -76,6 +78,18 @@ const App = () => {
       <Route path="/" element={<LoginPage onLogin={googleLogin} />} />
 
       <Route path="/finishSignIn" element={<FinishSignIn />} />
+
+      {/* <Route path="/my-whiteboards" element={<MyWhiteboardsPage />} /> */}
+
+      <Route
+        path="/dashboard"
+        element={
+          <>
+            <Navbar />
+            <DashboardRouter />
+          </>
+        }
+      />
 
       {/* Teacher's Home */}
       <Route

@@ -492,12 +492,16 @@ body {
   flex: 0 0 350px;
 }
 
-.row {
+.py-5 {
+  padding-top: 4rem !important;
+}
+
+/* .row {
   display: flex;
   flex-wrap: wrap;
   gap: 20px;
   justify-content: flex-start;
-}
+} */
 
 .col-md-4 {
   display: flex;
@@ -564,12 +568,12 @@ body {
   width: 100%;
 }
 
-.row {
+/* .row {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-start;
   align-items: flex-start;
-}
+} */
 /* .student-dashboard-container {
   margin: 0 !important;
   padding: 0;
@@ -997,9 +1001,9 @@ button,
   height: 16px;
 }
 
-.row {
+/* .row {
   margin-bottom: 10px;
-}
+} */
 
 .back-btn {
   display: block;

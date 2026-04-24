@@ -23,6 +23,14 @@ import "bootstrap-icons/font/bootstrap-icons.css";
 import { db, auth, googleProvider } from "../firebaseConfig";
 
 const LoginPage = () => {
+  const DEVELOPER_EMAIL = "saramshgautam@gmail.com";
+
+  const accessMailto = `mailto:${DEVELOPER_EMAIL}?subject=${encodeURIComponent(
+    "Requesting access to PolyFlux"
+  )}&body=${encodeURIComponent(
+    "Hi,\n\nI want to use PolyFlux and need access.\n\nName: (Enter your name)\nEmail: (Enter your email)\nPassword: (Enter a password)\n\nThanks."
+  )}`;
+
   const [message, setMessage] = useState(null); // optional local messages
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -176,52 +184,159 @@ const LoginPage = () => {
     }
   };
 
+  // const handleProfileAndRedirect = async (user) => {
+  //   const userEmail = (user.email || "").trim().toLowerCase();
+
+  //   try {
+  //     const classroomsRef = collection(db, "classrooms");
+  //     const classroomsSnap = await getDocs(classroomsRef);
+
+  //     const assignedWhiteboards = [];
+
+  //     for (const classroomDoc of classroomsSnap.docs) {
+  //       const classId = classroomDoc.id;
+
+  //       const studentRef = doc(
+  //         db,
+  //         "classrooms",
+  //         classId,
+  //         "students",
+  //         userEmail
+  //       );
+  //       const studentDoc = await getDoc(studentRef);
+
+  //       if (studentDoc.exists()) {
+  //         const classroomData = classroomDoc.data();
+
+  //         assignedWhiteboards.push({
+  //           className: classId,
+  //           classDisplayName: classroomData.class_name || classId,
+  //           courseID: classroomData.courseID || classId,
+  //           semester: classroomData.semester || "",
+  //           teacherEmail: classroomData.teacherEmail || "",
+  //           projectName: classroomData.projectName || "Mark1",
+  //           teamName: classroomData.teamName || "Team 1",
+  //         });
+  //       }
+  //     }
+
+  //     if (assignedWhiteboards.length === 0) {
+  //       addMessage("danger", "You are not registered in any classroom.");
+  //       return;
+  //     }
+
+  //     addMessage("success", "Welcome! Redirecting to your whiteboards.");
+
+  //     navigate("/dashboard", {
+  //       state: { assignedWhiteboards, userEmail },
+  //     });
+  //     // navigate("/my-whiteboards", {
+  //     //   state: { assignedWhiteboards, userEmail },
+  //     // });
+  //   } catch (err) {
+  //     console.error("Error locating classrooms:", err);
+  //     addMessage("danger", "Could not locate your whiteboards.");
+  //   }
+  // };
+
   const handleProfileAndRedirect = async (user) => {
-    const userEmail = user.email;
-    const userName = user.displayName || userEmail;
-    const photoURL = user.photoURL || "";
+    const userEmail = (user.email || "").trim().toLowerCase();
 
-    // OPTIONAL: enforce LSU domain at auth level
-    // if (!userEmail.toLowerCase().endsWith("@lsu.edu")) {
-    //   addMessage(
-    //     "danger",
-    //     "Only LSU email accounts are allowed. Please use your LSU email."
-    //   );
-    //   await auth.signOut();
-    //   return;
-    // }
+    try {
+      const userDocRef = doc(db, "users", userEmail);
+      const userDocSnap = await getDoc(userDocRef);
 
-    // Fetch profile from Firestore
-    const userDocRef = doc(db, "users", userEmail);
-    const userDoc = await getDoc(userDocRef);
+      if (!userDocSnap.exists()) {
+        addMessage(
+          "danger",
+          "Your account is not registered in the system. Please contact the instructor."
+        );
+        return;
+      }
 
-    if (!userDoc.exists()) {
-      addMessage(
-        "danger",
-        "Your account is not registered in the system. Please contact the instructor."
-      );
-      await auth.signOut();
-      return;
+      const userData = userDocSnap.data();
+      const role = userData.role || "";
+
+      localStorage.setItem("userEmail", userEmail);
+      localStorage.setItem("role", role);
+      localStorage.removeItem("assignedWhiteboards");
+
+      if (role === "teacher" || role === "admin") {
+        addMessage("success", "Welcome! Redirecting to your dashboard.");
+        navigate("/dashboard");
+        return;
+      }
+
+      if (role === "student") {
+        const classroomsRef = collection(db, "classrooms");
+        const classroomsSnap = await getDocs(classroomsRef);
+
+        const assignedWhiteboards = [];
+
+        for (const classroomDoc of classroomsSnap.docs) {
+          const classId = classroomDoc.id;
+          const classroomData = classroomDoc.data();
+
+          const projectsRef = collection(db, "classrooms", classId, "Projects");
+          const projectsSnap = await getDocs(projectsRef);
+
+          for (const projectDoc of projectsSnap.docs) {
+            const projectId = projectDoc.id;
+            const projectData = projectDoc.data();
+
+            const teamsRef = collection(
+              db,
+              "classrooms",
+              classId,
+              "Projects",
+              projectId,
+              "teams"
+            );
+            const teamsSnap = await getDocs(teamsRef);
+
+            for (const teamDoc of teamsSnap.docs) {
+              const teamData = teamDoc.data();
+
+              const memberEmails = Object.keys(teamData)
+                .filter((key) => key !== "previewUrl")
+                .map((email) => email.trim().toLowerCase());
+
+              if (memberEmails.includes(userEmail)) {
+                assignedWhiteboards.push({
+                  classId,
+                  className: classId,
+                  classDisplayName: classroomData.class_name || classId,
+                  courseID: classroomData.courseID || classId,
+                  semester: classroomData.semester || "",
+                  teacherEmail: classroomData.teacherEmail || "",
+                  projectName: projectData.projectName || projectId,
+                  teamName: teamDoc.id,
+                });
+              }
+            }
+          }
+        }
+
+        if (assignedWhiteboards.length === 0) {
+          addMessage("danger", "You are not assigned to any whiteboards.");
+          return;
+        }
+
+        localStorage.setItem(
+          "assignedWhiteboards",
+          JSON.stringify(assignedWhiteboards)
+        );
+
+        addMessage("success", "Welcome! Redirecting to your dashboard.");
+        navigate("/dashboard");
+        return;
+      }
+
+      addMessage("danger", "Your account role is not recognized.");
+    } catch (err) {
+      console.error("Error during login redirect:", err);
+      addMessage("danger", "Could not load your dashboard.");
     }
-
-    const userData = userDoc.data();
-    const role = userData.role;
-    const LSUID = userData.lsuID || null;
-
-    // Store profile locally
-    localStorage.setItem("role", role);
-    localStorage.setItem("userEmail", userEmail);
-    if (photoURL) localStorage.setItem("photoURL", photoURL);
-    if (LSUID) localStorage.setItem("LSUID", LSUID);
-
-    console.log("Signed in with Firestore profile:", {
-      userEmail,
-      role,
-      LSUID,
-    });
-
-    addMessage("success", `Welcome, ${userName}!`);
-    navigate(role === "teacher" ? "/teachers-home" : "/students-home");
   };
 
   const googleLogin = async () => {
@@ -254,6 +369,14 @@ const LoginPage = () => {
       addMessage("danger", msg);
     }
   };
+
+  const renderDeveloperAccessLink = () => (
+    <div className="mt-3">
+      <a href={accessMailto} className="btn btn-link p-0 text-decoration-none">
+        Email the developer for access
+      </a>
+    </div>
+  );
 
   return (
     <div
@@ -323,7 +446,7 @@ const LoginPage = () => {
         </div>
 
         {/* Small link to reveal email/password form */}
-        {/* {!showEmailForm && (
+        {!showEmailForm && (
           <button
             type="button"
             className="btn btn-link mt-2 p-0"
@@ -331,7 +454,7 @@ const LoginPage = () => {
           >
             Sign in with email instead
           </button>
-        )} */}
+        )}
 
         {/* Email/password login: only visible after clicking the link */}
         {showEmailForm && (
@@ -342,14 +465,13 @@ const LoginPage = () => {
               <span className="mx-2 text-muted">OR</span>
               <hr className="flex-grow-1" />
             </div>
-
             <form onSubmit={emailPasswordLogin}>
               <div className="mb-2 text-start">
                 <label className="form-label mb-1">Email</label>
                 <input
                   type="email"
                   className="form-control"
-                  placeholder="yourname@lsu.edu"
+                  placeholder="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
@@ -361,7 +483,7 @@ const LoginPage = () => {
                 <input
                   type="password"
                   className="form-control"
-                  placeholder="Enter your password"
+                  placeholder="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
@@ -372,11 +494,12 @@ const LoginPage = () => {
                 Login with Email
               </button>
             </form>
+            {renderDeveloperAccessLink()}
           </>
         )}
 
         {/* Small link to reveal participant quick login */}
-        {!showParticipantForm && (
+        {/* {!showParticipantForm && (
           <button
             type="button"
             className="btn btn-link mt-2 p-0"
@@ -384,7 +507,7 @@ const LoginPage = () => {
           >
             Participant quick login
           </button>
-        )}
+        )} */}
 
         {showParticipantForm && (
           <>

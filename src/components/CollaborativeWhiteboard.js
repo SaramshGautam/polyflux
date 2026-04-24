@@ -470,6 +470,8 @@ const CollaborativeWhiteboard = () => {
   const [sessionActors, setSessionActors] = useState([]);
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(true);
 
+  const [aiEnabled, setAiEnabled] = useState(false);
+
   // --- bridge refs (anything used inside Tldraw components that changes) ---
   const panelCollapsedRef = useRef(isPanelCollapsed);
 
@@ -1664,7 +1666,8 @@ const CollaborativeWhiteboard = () => {
   const { requestAnalyze } = useProactiveNudges({
     editorRef: editorInstance,
     editorReady,
-    enabled: true,
+    // enabled: true,
+    enabled: aiEnabled,
 
     analyzeFn,
     onResult: onProactiveResult,
@@ -2036,13 +2039,6 @@ const CollaborativeWhiteboard = () => {
             setPhaseTailShapeIds(tailShapeIds || []);
 
             setCurrentPhaseDetail(currentPhase || null);
-
-            // const phaseName =
-            //   tailPhase && tailPhase.current_phase_dc
-            //     ? tailPhase.current_phase_dc
-            //     : null;
-
-            // setCurrentPhaseName(phaseName);
 
             const phaseName =
               currentPhase?.current_phase_dc ||

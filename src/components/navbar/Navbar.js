@@ -22,9 +22,15 @@ const Navbar = () => {
   const [displayName, setDisplayName] = useState("");
   const [role, setRole] = useState("");
 
+  // const homeRoute = useMemo(() => {
+  //   if (role === "teacher") return "/teachers-home";
+  //   if (role === "student" || role === "participant") return "/students-home";
+  //   return "/";
+  // }, [role]);
+
   const homeRoute = useMemo(() => {
-    if (role === "teacher") return "/teachers-home";
-    if (role === "student" || role === "participant") return "/students-home";
+    if (role === "teacher" || role === "student") return "/dashboard";
+    if (role === "participant") return "/";
     return "/";
   }, [role]);
 
