@@ -125,9 +125,13 @@ const LoginPage = () => {
     }
 
     try {
-      // 1) Verify participant exists in Firestore
       const userRef = collection(db, "users");
-      const q = query(userRef, where("email", "==", normalizedEmail));
+      const q = query(
+        userRef,
+        where("email", "==", normalizedEmail)
+        // where("participantId", "==", pid)
+      );
+
       const snap = await getDocs(q);
 
       if (snap.empty) {
@@ -138,104 +142,271 @@ const LoginPage = () => {
         return;
       }
 
-      // ✅ the exact matched user document
-      const userDocSnap = snap.docs[0];
-      const userData = userDocSnap.data();
+      const userDataSnap = snap.docs[0];
+      const userData = userDataSnap.data();
 
-      // ✅ 1.5) Update the user's display name to the participant ID (P1, P2, ...)
-      await updateDoc(userDocSnap.ref, {
-        name: pid,
-        updatedAt: serverTimestamp(),
-        // optional: keep a field for audit/debugging
-        lastParticipantId: pid,
-      });
+      // const assignments = userData.assignments || [];
+      // const rawAssignments = userData.assignments;
 
-      // 2) Sign in via Firebase Auth (fastest: anonymous)
-      const anonRes = await signInAnonymously(auth);
-      const uid = anonRes.user.uid;
+      const rawAssignments = userData.assignment || [];
+      const assignments = Array.isArray(rawAssignments) ? rawAssignments : [];
 
-      await updateProfile(anonRes.user, { displayName: pid });
+      if (assignments.length === 0) {
+        addMessage("danger", "No team assignments found for this participant.");
+        return;
+      }
 
-      await setDoc(doc(db, "participantSessions", uid), {
-        uid,
-        email: normalizedEmail,
-        participantId: pid,
-        role: userData.role || "participant",
-        studyId: userData.studyId || "Eval3333",
-        taskName: userData.taskName || "ConditionC2",
-        teamId: userData.teamId || "TeamE",
-        createdAt: serverTimestamp(),
-      });
+      if (assignments.length === 1) {
+        const a = assignments[0];
 
-      addMessage("success", "Welcome! Redirecting to the whiteboard...");
+        const anonRes = await signInAnonymously(auth);
+        const uid = anonRes.user.uid;
 
-      const studyId = userData.studyId || "Eval3333";
-      const taskName = userData.taskName || "ConditionC2";
-      const teamId = userData.teamId || "TeamE";
+        await updateProfile(anonRes.user, {
+          displayName: pid,
+        });
 
-      navigate(
-        `/whiteboard/${encodeURIComponent(studyId)}/${encodeURIComponent(
-          taskName
-        )}/${encodeURIComponent(teamId)}`
-      );
+        await setDoc(doc(db, "participantSessions", uid), {
+          uid,
+          email: normalizedEmail,
+          participantId: pid,
+          role: userData.role || "participant",
+          studyId: a.studyId,
+          taskName: a.taskName,
+          teamId: a.teamId,
+          createdAt: serverTimestamp(),
+        });
+
+        addMessage("success", "Welcome! Redirecting to your whiteboard...");
+
+        navigate(
+          `/whiteboard/${encodeURIComponent(a.studyId)}/${encodeURIComponent(
+            a.taskName
+          )}/${encodeURIComponent(a.teamId)}`
+        );
+        return;
+      }
+
+      if (assignments.length > 1) {
+        const assignedWhiteboards = await Promise.all(
+          assignments.map(async (a) => {
+            const classId = a.studyId || "";
+            const classSnap = await getDoc(doc(db, "classrooms", classId));
+            const classData = classSnap.exists() ? classSnap.data() : {};
+
+            return {
+              classId,
+              className: classId,
+              classDisplayName: classData.class_name || classId,
+              courseID: classData.courseID || classId,
+              semester: classData.semester || "",
+              teacherEmail: classData.teacherEmail || "",
+              projectName: a.taskName || "",
+              teamName: a.teamId || "",
+            };
+          })
+        );
+
+        console.log("raw assignments:", assignments);
+        console.log("assignedWhiteboards:", assignedWhiteboards);
+
+        localStorage.setItem("userEmail", normalizedEmail);
+        localStorage.setItem("role", "participant");
+        localStorage.setItem(
+          "assignedWhiteboards",
+          JSON.stringify(assignedWhiteboards)
+        );
+
+        addMessage("success", "Welcome! Please choose your assigned board.");
+        navigate("/dashboard");
+        return;
+      }
     } catch (err) {
       console.error("Participant quick login failed:", err);
       addMessage("danger", "Login failed. Please try again.");
     }
   };
 
-  // const handleProfileAndRedirect = async (user) => {
-  //   const userEmail = (user.email || "").trim().toLowerCase();
+  // const participantQuickLogin = async (e) => {
+  //   e.preventDefault();
+
+  //   const normalizedEmail = participantEmail.trim().toLowerCase();
+  //   const pid = participantId.trim();
+
+  //   if (!normalizedEmail || !pid) {
+  //     addMessage("danger", "Please enter both email and Participant ID.");
+  //     return;
+  //   }
 
   //   try {
-  //     const classroomsRef = collection(db, "classrooms");
-  //     const classroomsSnap = await getDocs(classroomsRef);
+  //     const userRef = collection(db, "users");
+  //     const q = query(
+  //       userRef,
+  //       where("email", "==", normalizedEmail)
+  //       // where("participantId", "==", pid)
+  //     );
 
-  //     const assignedWhiteboards = [];
+  //     const snap = await getDocs(q);
 
-  //     for (const classroomDoc of classroomsSnap.docs) {
-  //       const classId = classroomDoc.id;
-
-  //       const studentRef = doc(
-  //         db,
-  //         "classrooms",
-  //         classId,
-  //         "students",
-  //         userEmail
+  //     if (snap.empty) {
+  //       addMessage(
+  //         "danger",
+  //         "Not found. Please check your email and Participant ID."
   //       );
-  //       const studentDoc = await getDoc(studentRef);
-
-  //       if (studentDoc.exists()) {
-  //         const classroomData = classroomDoc.data();
-
-  //         assignedWhiteboards.push({
-  //           className: classId,
-  //           classDisplayName: classroomData.class_name || classId,
-  //           courseID: classroomData.courseID || classId,
-  //           semester: classroomData.semester || "",
-  //           teacherEmail: classroomData.teacherEmail || "",
-  //           projectName: classroomData.projectName || "Mark1",
-  //           teamName: classroomData.teamName || "Team 1",
-  //         });
-  //       }
-  //     }
-
-  //     if (assignedWhiteboards.length === 0) {
-  //       addMessage("danger", "You are not registered in any classroom.");
   //       return;
   //     }
 
-  //     addMessage("success", "Welcome! Redirecting to your whiteboards.");
+  //     const userDataSnap = snap.docs[0];
+  //     const userData = userDataSnap.data();
 
-  //     navigate("/dashboard", {
-  //       state: { assignedWhiteboards, userEmail },
+  //     const assignments = userData.assignments || [];
+  //     if (assignments.length === 0) {
+  //       addMessage("danger", "No team assignments found for this participant.");
+  //       return;
+  //     }
+
+  //     if (assignments.length === 1) {
+  //       const a = assignments[0];
+  //       userData.studyId = a.studyId;
+  //       userData.taskName = a.taskName;
+  //       userData.teamId = a.teamId;
+
+  //       navigate(
+  //         `/whiteboard/${encodeURIComponent(a.studyId)}/${encodeURIComponent(
+  //           a.taskName
+  //         )}/${encodeURIComponent(a.teamId)}`
+  //       );
+  //       return;
+  //     }
+
+  //     if (assignments.length > 1) {
+  //       const assignedWhiteboards = assignments.map((a) => ({
+  //         className: a.studyId,
+  //         classDisplayName: a.studyId,
+  //         courseID: a.studyId,
+  //         semester: "",
+  //         teacherEmail: "",
+  //         projectName: a.taskName,
+  //         teamName: a.teamId,
+  //       }));
+
+  //       localStorage.setItem("userEmail", normalizedEmail);
+  //       localStorage.setItem("role", "participant");
+  //       localStorage.setItem(
+  //         "assignedWhiteboards",
+  //         JSON.stringify(assignedWhiteboards)
+  //       );
+
+  //       addMessage("success", "Welcome! Please choose your assigned board.");
+  //       navigate("/dashboard");
+  //       return;
+  //     }
+
+  //     if (!userData.studyId || !userData.taskName || !userData.teamId) {
+  //       addMessage(
+  //         "danger",
+  //         "Your account is not properly set up. Please contact the instructor."
+  //       );
+  //       return;
+  //     }
+
+  //     const anonRes = await signInAnonymously(auth);
+  //     const uid = anonRes.user.uid;
+
+  //     await updateProfile(anonRes.user, {
+  //       displayName: pid,
   //     });
-  //     // navigate("/my-whiteboards", {
-  //     //   state: { assignedWhiteboards, userEmail },
-  //     // });
+
+  //     await setDoc(doc(db, "participantSessions", uid), {
+  //       uid,
+  //       email: normalizedEmail,
+  //       participantId: pid,
+  //       role: userData.role || "participant",
+  //       studyId: userData.studyId,
+  //       taskName: userData.taskName,
+  //       teamId: userData.teamId,
+  //       createdAt: serverTimestamp(),
+  //     });
+
+  //     addMessage("success", "Welcome! Redirecting to the whiteboard...");
+
+  //     const studyId = userData.studyId;
+  //     const taskName = userData.taskName;
+  //     const teamId = userData.teamId;
+
+  //     navigate(
+  //       `/whiteboard/${encodeURIComponent(studyId)}/${encodeURIComponent(
+  //         taskName
+  //       )}/${encodeURIComponent(teamId)}`
+  //     );
   //   } catch (err) {
-  //     console.error("Error locating classrooms:", err);
-  //     addMessage("danger", "Could not locate your whiteboards.");
+  //     console.error("Participant quick login failed:", err);
+  //     addMessage("danger", "Login failed. Please try again.");
+  //   }
+  // };
+
+  // const participantQuickLogin = async (e) => {
+  //   e.preventDefault();
+
+  //   const normalizedEmail = participantEmail.trim().toLowerCase();
+  //   const pid = participantId.trim();
+
+  //   if (!normalizedEmail || !pid) {
+  //     addMessage("danger", "Please enter both email and Participant ID.");
+  //     return;
+  //   }
+
+  //   try {
+  //     const userRef = collection(db, "users");
+  //     const q = query(userRef, where("email", "==", normalizedEmail));
+  //     const snap = await getDocs(q);
+
+  //     if (snap.empty) {
+  //       addMessage(
+  //         "danger",
+  //         "Not found. Please check your email and Participant ID."
+  //       );
+  //       return;
+  //     }
+  //     const userDocSnap = snap.docs[0];
+  //     const userData = userDocSnap.data();
+
+  //     await updateDoc(userDocSnap.ref, {
+  //       name: pid,
+  //       updatedAt: serverTimestamp(),
+  //       lastParticipantId: pid,
+  //     });
+
+  //     const anonRes = await signInAnonymously(auth);
+  //     const uid = anonRes.user.uid;
+
+  //     await updateProfile(anonRes.user, { displayName: pid });
+
+  //     await setDoc(doc(db, "participantSessions", uid), {
+  //       uid,
+  //       email: normalizedEmail,
+  //       participantId: pid,
+  //       role: userData.role || "participant",
+  //       studyId: userData.studyId || "Eval3333",
+  //       taskName: userData.taskName || "ConditionC2",
+  //       teamId: userData.teamId || "TeamE",
+  //       createdAt: serverTimestamp(),
+  //     });
+
+  //     addMessage("success", "Welcome! Redirecting to the whiteboard...");
+
+  //     const studyId = userData.studyId || "Eval3333";
+  //     const taskName = userData.taskName || "ConditionC2";
+  //     const teamId = userData.teamId || "TeamE";
+
+  //     navigate(
+  //       `/whiteboard/${encodeURIComponent(studyId)}/${encodeURIComponent(
+  //         taskName
+  //       )}/${encodeURIComponent(teamId)}`
+  //     );
+  //   } catch (err) {
+  //     console.error("Participant quick login failed:", err);
+  //     addMessage("danger", "Login failed. Please try again.");
   //   }
   // };
 
@@ -447,13 +618,16 @@ const LoginPage = () => {
 
         {/* Small link to reveal email/password form */}
         {!showEmailForm && (
-          <button
-            type="button"
-            className="btn btn-link mt-2 p-0"
-            onClick={() => setShowEmailForm(true)}
-          >
-            Sign in with email instead
-          </button>
+          <div className="mt-2">
+            <button
+              type="button"
+              // className="btn btn-link mt-2 p-0"
+              className="btn btn-outline-primary w-100"
+              onClick={() => setShowEmailForm(true)}
+            >
+              Sign in with email instead
+            </button>
+          </div>
         )}
 
         {/* Email/password login: only visible after clicking the link */}
@@ -499,15 +673,18 @@ const LoginPage = () => {
         )}
 
         {/* Small link to reveal participant quick login */}
-        {/* {!showParticipantForm && (
-          <button
-            type="button"
-            className="btn btn-link mt-2 p-0"
-            onClick={() => setShowParticipantForm(true)}
-          >
-            Participant quick login
-          </button>
-        )} */}
+        {!showParticipantForm && (
+          <div className="mt-3">
+            <button
+              type="button"
+              // className="btn btn-link mt-2 p-0"
+              className="btn btn-outline-dark w-100"
+              onClick={() => setShowParticipantForm(true)}
+            >
+              Participant quick login
+            </button>
+          </div>
+        )}
 
         {showParticipantForm && (
           <>
