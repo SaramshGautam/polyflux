@@ -19,6 +19,7 @@ import {
   defaultBindingUtils,
   useEditor,
   useValue,
+  createShapeId,
 } from "tldraw";
 import { useSync } from "@tldraw/sync";
 import "tldraw/tldraw.css";
@@ -40,6 +41,7 @@ import {
   setDoc,
   serverTimestamp,
   onSnapshot,
+  Firestore,
 } from "firebase/firestore";
 
 import { app, db, auth, storage } from "../firebaseConfig";
@@ -70,6 +72,8 @@ import PhaseNudgeBadges from "./whiteboard/PhaseNudgeBadges";
 import { createNamedNoteShapeUtil } from "./NamedNoteShapeUtil";
 import { createNamedShapeUtils } from "./NamedShapeUtils";
 import { UserContext } from "./UserContext";
+// import { PublicRegionShapeUtil } from "./canvashelpers/PublicRegionShapeUtil";
+import SessionSpeechCapture from "./whiteboard/SessionSpeechCapture";
 
 import {
   resolveImageUrl,
@@ -457,6 +461,7 @@ const CollaborativeWhiteboard = () => {
   const [showSidebar, setShowSidebar] = useState(false);
   const [messages, setMessages] = useState([]);
   const [shapesForAnalysis, setShapesForAnalysis] = useState([]);
+  const [speechForAnalysis, setSpeechForAnalysis] = useState([]);
 
   const recorderRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -470,7 +475,11 @@ const CollaborativeWhiteboard = () => {
   const [sessionActors, setSessionActors] = useState([]);
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(true);
 
-  const [aiEnabled, setAiEnabled] = useState(false);
+  const [aiEnabled, setAiEnabled] = useState(true);
+
+  // speech capture state
+  const prevSpeechCountRef = useRef(0);
+  const speechBootstrapDoneRef = useRef(false);
 
   // --- bridge refs (anything used inside Tldraw components that changes) ---
   const panelCollapsedRef = useRef(isPanelCollapsed);
@@ -526,20 +535,6 @@ const CollaborativeWhiteboard = () => {
     actorLabelByIdRef.current = actorLabelById || {};
   }, [actorLabelById]);
 
-  // const shapeUtilsMemo = useMemo(() => {
-  //   const getActorLabelForShape = (shapeId) => {
-  //     const actorId = shapeActorIdByShapeIdRef.current?.[shapeId];
-  //     if (!actorId) return null;
-  //     return actorLabelByIdRef.current?.[actorId] || actorId; // fallback to id
-  //   };
-
-  //   return [
-  //     ...defaultShapeUtils.filter((u) => u.type !== "note"),
-  //     createNamedNoteShapeUtil({ getActorLabelForShape }),
-  //     AudioShapeUtil,
-  //   ];
-  // }, []); // ✅ empty deps because refs update
-
   const shapeUtilsMemo = useMemo(() => {
     const getActorLabelForShape = (shapeId) => {
       const actorId = shapeActorIdByShapeIdRef.current?.[shapeId];
@@ -560,8 +555,9 @@ const CollaborativeWhiteboard = () => {
       NamedText,
       NamedImage,
       AudioShapeUtil,
+      // PublicRegionShapeUtil,
     ];
-  }, []); // keep empty deps since refs update
+  }, []);
 
   useEffect(() => {
     if (!editorReady) return;
@@ -623,6 +619,32 @@ const CollaborativeWhiteboard = () => {
     };
   }, [editorReady]);
 
+  // const createPublicRegion = useCallback(() => {
+  //   const editor = editorInstance.current;
+  //   if (!editor) return;
+
+  //   const bounds = editor.getViewportPageBounds();
+  //   const x = (bounds.minX + bounds.maxX) / 2 - 160;
+  //   const y = (bounds.minY + bounds.maxY) / 2 - 110;
+
+  //   editor.createShape({
+  //     id: createShapeId(),
+  //     type: "public-region",
+  //     x,
+  //     y,
+  //     props: {
+  //       w: 320,
+  //       h: 220,
+  //       label: "Common Space",
+  //     },
+  //     meta: {
+  //       isPublicRegion: true,
+  //       ownerId: auth.currentUser?.uid || auth.currentUser?.email || "anon",
+  //       visibility: "public",
+  //     },
+  //   });
+  // }, []);
+
   const lastTriggerRef = useRef(null);
   const NUDGE_COOLDOWN_MS = 120_000;
 
@@ -654,7 +676,8 @@ const CollaborativeWhiteboard = () => {
       (entry) => {
         if (stampingRef.current) return;
 
-        const actorId = actorIdRef.current.displayName;
+        const actorId = actorIdRef.current;
+        console.log("actorId:", actorId);
 
         const added = entry?.changes?.added
           ? Object.values(entry.changes.added)
@@ -673,17 +696,30 @@ const CollaborativeWhiteboard = () => {
             rec.kind === "shape";
           if (!isShapeRecord) return;
 
+          const ownerId =
+            auth.currentUser?.uid || auth.currentUser?.email || "anon";
+
           const shape = editor.getShape(rec.id);
           if (!shape) return;
 
           const nextMeta = { ...(shape.meta || {}) };
 
-          // If createdBy not set, set it once
           if (!nextMeta.createdBy) nextMeta.createdBy = actorId;
-
-          // Always stamp updatedBy on user-driven updates
           nextMeta.updatedBy = actorId;
           nextMeta.updatedAt = Date.now();
+
+          if (!nextMeta.ownerId) {
+            nextMeta.ownerId = ownerId;
+          }
+
+          // if (shape.type === "public-region") {
+          //   nextMeta.visibility = "public";
+          //   nextMeta.isPublicRegion = true;
+          // } else {
+          //   const computedVisibility = recomputeShapeVisibility(editor, shape);
+          //   nextMeta.visibility =
+          //     computedVisibility || nextMeta.visibility || "private";
+          // }
 
           // Avoid no-op updates
           const same =
@@ -813,6 +849,7 @@ const CollaborativeWhiteboard = () => {
     return () => clearTimeout(id);
   }, [isPhasePulsing]);
 
+  // Firestore Shape Listener
   useEffect(() => {
     if (!className || !projectName || !teamName) return;
 
@@ -839,7 +876,7 @@ const CollaborativeWhiteboard = () => {
       (snapshot) => {
         const shapes = snapshot.docs.map((docSnap) => ({
           id: docSnap.id,
-          ...docSnap.data(), // this stays in your Firestore "shape" format
+          ...docSnap.data(),
         }));
 
         setShapesForAnalysis(shapes);
@@ -853,6 +890,43 @@ const CollaborativeWhiteboard = () => {
     return () => unsubscribe();
   }, [className, projectName, teamName]);
 
+  // Firestore Speech Listener
+  useEffect(() => {
+    if (!className || !projectName || !teamName) return;
+
+    const speechCol = collection(
+      db,
+      "classrooms",
+      className,
+      "Projects",
+      projectName,
+      "teams",
+      teamName,
+      "speech_events"
+    );
+
+    const q = query(speechCol, orderBy("createdAt", "desc"));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const speech = snapshot.docs.map((docSnap) => ({
+          id: docSnap.id,
+          ...docSnap.data(),
+        }));
+
+        setSpeechForAnalysis(speech);
+        console.log("[FS speech] for analysis:", speech);
+      },
+      (error) => {
+        console.error("Error listening to speech_events:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [className, projectName, teamName]);
+
+  //  Firestore Presence Listener
   useEffect(() => {
     if (!className || !projectName || !teamName) return;
 
@@ -893,6 +967,49 @@ const CollaborativeWhiteboard = () => {
 
     return () => unsub();
   }, [className, projectName, teamName]);
+
+  const normalizedSpeechForAnalysis = useMemo(() => {
+    return (speechForAnalysis || [])
+      .filter((item) => {
+        if (!item) return false;
+        if (item.type !== "utterance") return false;
+        if (item.isFinal === false) return false;
+
+        const text = String(item.text || "").trim();
+        return text.length > 0;
+      })
+      .map((item) => ({
+        id: item.id || null,
+        type: item.type || "utterance",
+        text: String(item.text || "").trim(),
+        speakerId: item.speakerId || "unknown",
+        speakerLabel: item.speakerLabel || "Unknown speaker",
+        capturedBy: item.capturedBy || null,
+        source: item.source || "browser_speech_recognition",
+        startedAt: typeof item.startedAt === "number" ? item.startedAt : null,
+        endedAt: typeof item.endedAt === "number" ? item.endedAt : null,
+        durationMs:
+          typeof item.durationMs === "number" ? item.durationMs : null,
+        createdAt:
+          typeof item.createdAt?.toMillis === "function"
+            ? item.createdAt.toMillis()
+            : typeof item.createdAt === "number"
+            ? item.createdAt
+            : null,
+      }))
+      .sort((a, b) => {
+        const ta = a.startedAt ?? a.createdAt ?? 0;
+        const tb = b.startedAt ?? b.createdAt ?? 0;
+        return ta - tb;
+      });
+  }, [speechForAnalysis]);
+
+  useEffect(() => {
+    console.log(
+      "[speech] Normalized speech for analysis:",
+      normalizedSpeechForAnalysis
+    );
+  }, [normalizedSpeechForAnalysis]);
 
   const actorsFromFS = useMemo(() => {
     const set = new Set();
@@ -1521,7 +1638,6 @@ const CollaborativeWhiteboard = () => {
 
   const analyzeFn = useCallback(
     async ({ source, signal }) => {
-      // ✅ Global cooldown (auto only)
       if (source === "proactive") {
         const now = Date.now();
         if (now < autoGlobalCooldownUntilRef.current) {
@@ -1532,8 +1648,12 @@ const CollaborativeWhiteboard = () => {
       const payload = {
         canvasId: `${className}_${projectName}_${teamName}`,
         shapes: shapesForAnalysis || [],
+        // speech: speechForAnalysis || [],
+        speech: normalizedSpeechForAnalysis || [],
         source,
       };
+
+      console.log("[Analyze] Payload:", payload);
 
       // const res = await fetch("http://127.0.0.1:8060/analyze", {
       const res = await fetch(
@@ -1551,7 +1671,13 @@ const CollaborativeWhiteboard = () => {
       }
       return await res.json();
     },
-    [className, projectName, teamName, shapesForAnalysis]
+    [
+      className,
+      projectName,
+      teamName,
+      shapesForAnalysis,
+      normalizedSpeechForAnalysis,
+    ]
   );
 
   function normalizeAnalyzeResponse(data) {
@@ -1588,7 +1714,6 @@ const CollaborativeWhiteboard = () => {
       const phaseName =
         metrics?.current_phase_dc || metrics?.current_phase_full || null;
 
-      // If phase is missing, don't overwrite with null (prevents “Predicted Phase:” blank)
       if (phaseName) setCurrentPhaseName(phaseName);
 
       setPhaseNudgePreview(text);
@@ -1606,7 +1731,7 @@ const CollaborativeWhiteboard = () => {
           return;
         }
 
-        // ✅ mark emitted times
+        // mark emitted times
         autoTriggerCooldownMapRef.current[trigger.id] = now;
         autoGlobalCooldownUntilRef.current = now + NUDGE_COOLDOWN_MS;
 
@@ -1663,10 +1788,9 @@ const CollaborativeWhiteboard = () => {
     [pushNudgeToChatbot]
   );
 
-  const { requestAnalyze } = useProactiveNudges({
+  const { requestAnalyze, bumpActivity } = useProactiveNudges({
     editorRef: editorInstance,
     editorReady,
-    // enabled: true,
     enabled: aiEnabled,
 
     analyzeFn,
@@ -1678,6 +1802,46 @@ const CollaborativeWhiteboard = () => {
     maxWaitMs: 30000,
     minEvents: 4,
   });
+
+  useEffect(() => {
+    if (!aiEnabled || !editorReady) return;
+
+    const currentCount = normalizedSpeechForAnalysis.length;
+
+    // First load: don't treat existing historical speech as new activity
+    if (!speechBootstrapDoneRef.current) {
+      prevSpeechCountRef.current = currentCount;
+      speechBootstrapDoneRef.current = true;
+      return;
+    }
+
+    const delta = currentCount - prevSpeechCountRef.current;
+
+    if (delta <= 0) {
+      prevSpeechCountRef.current = currentCount;
+      return;
+    }
+
+    const recentUtterances = normalizedSpeechForAnalysis.slice(-delta);
+
+    // Ignore super-short or low-value chunks
+    const meaningfulUtterances = recentUtterances.filter((u) => {
+      const text = String(u.text || "").trim();
+      const words = text.split(/\s+/).filter(Boolean);
+      return words.length >= 3;
+    });
+
+    if (meaningfulUtterances.length > 0) {
+      console.log(
+        "[speech] bumping proactive activity from speech:",
+        meaningfulUtterances
+      );
+
+      bumpActivity(meaningfulUtterances.length);
+    }
+
+    prevSpeechCountRef.current = currentCount;
+  }, [normalizedSpeechForAnalysis, aiEnabled, editorReady, bumpActivity]);
 
   // --- Proactive analyze trigger (bolt-like, but automatic) ---
   const proactiveRef = useRef({
@@ -1715,6 +1879,57 @@ const CollaborativeWhiteboard = () => {
       </>
     );
   }
+
+  // function getShapeCenter(bounds) {
+  //   return {
+  //     x: (bounds.minX + bounds.maxX) / 2,
+  //     y: (bounds.minY + bounds.maxY) / 2,
+  //   };
+  // }
+
+  // function pointInBounds(point, bounds) {
+  //   return (
+  //     point.x >= bounds.minX &&
+  //     point.x <= bounds.maxX &&
+  //     point.y >= bounds.minY &&
+  //     point.y <= bounds.maxY
+  //   );
+  // }
+
+  // const recomputeShapeVisibility = useCallback((editor, shape) => {
+  //   if (!shape) return null;
+  //   if (shape.type === "public-region") return null;
+
+  //   const bounds = editor.getShapePageBounds(shape.id);
+  //   if (!bounds) return null;
+
+  //   const center = getShapeCenter(bounds);
+
+  //   const allShapes = editor.getCurrentPageShapes();
+  //   const publicRegions = allShapes.filter((s) => s.type === "public-region");
+
+  //   const isInsidePublicRegion = publicRegions.some((region) => {
+  //     const regionBounds = editor.getShapePageBounds(region.id);
+  //     if (!regionBounds) return false;
+  //     return pointInBounds(center, regionBounds);
+  //   });
+
+  //   return isInsidePublicRegion ? "public" : "private";
+  // }, []);
+
+  // const getSharedShapeVisibility = useCallback((shape) => {
+  //   if (shape.type === "public-region") return "inherit";
+
+  //   const ownerId = shape.meta?.ownerId;
+  //   const visibility = shape.meta?.visibility || "private";
+  //   const currentUserId =
+  //     auth.currentUser?.uid || auth.currentUser?.email || "anon";
+
+  //   if (visibility === "public") return "inherit";
+  //   if (ownerId === currentUserId) return "inherit";
+
+  //   return "hidden";
+  // }, []);
 
   // 2) Pass a stable components object (NO deps)
   const components = useMemo(
@@ -1818,6 +2033,25 @@ const CollaborativeWhiteboard = () => {
 
       return (
         <DefaultToolbar {...props}>
+          {/* <button
+            type="button"
+            onClick={createPublicRegion}
+            style={{
+              position: "fixed",
+              top: 70,
+              left: 180,
+              zIndex: 10090,
+              padding: "8px 14px",
+              borderRadius: 8,
+              border: "1px solid #ccc",
+              background: "#2563eb",
+              color: "white",
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            ✉️
+          </button> */}
           {/* <button
             type="button"
             className="tlui-button tlui-button--icon"
@@ -1947,8 +2181,15 @@ const CollaborativeWhiteboard = () => {
             shapeUtils={shapeUtilsMemo}
             overrides={uiOverrides}
             components={tldrawComponents}
+            // getShapeVisibility={getSharedShapeVisibility}
           />
         </UserContext.Provider>
+
+        <SessionSpeechCapture
+          className={className}
+          projectName={projectName}
+          teamName={teamName}
+        />
 
         <RobotDock
           src={robotSrc}

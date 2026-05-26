@@ -141,5 +141,9 @@ export function useProactiveNudges({
     engineRef.current?.runAnalyze?.(source);
   }, []);
 
-  return { requestAnalyze };
+  const bumpActivity = useCallback((count = 1) => {
+    engineRef.current?.bumpActivity?.(Math.max(1, count));
+  }, []);
+
+  return { requestAnalyze, bumpActivity };
 }
