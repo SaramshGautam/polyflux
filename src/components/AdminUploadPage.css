@@ -1,0 +1,138 @@
+/* AdminUploadPage.css
+   Scoped under .admin-upload-page so it can't leak into other pages
+   that also use Bootstrap's generic .table / .btn / .alert classes. */
+
+.admin-upload-page {
+  --au-accent: #4f6df5;
+  --au-accent-dark: #3b52c4;
+  --au-text: #232733;
+  --au-text-muted: #6b7280;
+  --au-border: #e4e7f0;
+  --au-surface-muted: #f6f7fb;
+
+  max-width: 1200px;
+  margin: 0 auto;
+  color: var(--au-text);
+}
+
+.admin-upload-page h2 {
+  font-size: 1.7rem;
+  letter-spacing: -0.01em;
+}
+
+.admin-upload-page > p.text-muted {
+  color: var(--au-text-muted);
+  max-width: 640px;
+}
+
+/* ---------- Entry table ---------- */
+
+.admin-upload-page .table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.admin-upload-page .table thead th {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--au-text-muted);
+  border-bottom: 2px solid var(--au-border);
+  background: var(--au-surface-muted);
+  padding: 0.6rem 0.5rem;
+}
+
+.admin-upload-page .table tbody td {
+  padding: 0.4rem 0.5rem;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--au-border);
+}
+
+.admin-upload-page .table tbody tr:hover td {
+  background: #fafbff;
+}
+
+.admin-upload-page .form-control,
+.admin-upload-page .form-select {
+  border-radius: 8px;
+  border-color: var(--au-border);
+}
+
+.admin-upload-page .form-control:focus,
+.admin-upload-page .form-select:focus {
+  border-color: var(--au-accent);
+  box-shadow: 0 0 0 0.2rem rgba(79, 109, 245, 0.15);
+}
+
+.admin-upload-page .form-select:disabled {
+  background-color: var(--au-surface-muted);
+  color: var(--au-text-muted);
+  cursor: not-allowed;
+}
+
+/* Remove-row button */
+.admin-upload-page .btn-outline-danger {
+  border-radius: 8px;
+}
+
+/* ---------- Row action buttons ---------- */
+
+.admin-upload-page .btn-outline-secondary {
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+/* ---------- Primary submit button ---------- */
+
+.admin-upload-page button[type="submit"].btn-dark {
+  background: var(--au-accent);
+  border-color: var(--au-accent);
+  border-radius: 10px;
+  font-weight: 600;
+  padding: 0.55rem 1.5rem;
+  transition: background 0.15s ease, border-color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.admin-upload-page button[type="submit"].btn-dark:hover:not(:disabled) {
+  background: var(--au-accent-dark);
+  border-color: var(--au-accent-dark);
+  transform: translateY(-1px);
+}
+
+.admin-upload-page button[type="submit"].btn-dark:disabled {
+  opacity: 0.65;
+}
+
+/* ---------- Results section ---------- */
+
+.admin-upload-page h5 {
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.admin-upload-page .table-sm code {
+  background: var(--au-surface-muted);
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: var(--au-accent-dark);
+}
+
+.admin-upload-page .alert-danger {
+  border-radius: 12px;
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b42318;
+}
+
+.admin-upload-page .alert-danger ul {
+  padding-left: 1.1rem;
+  margin-top: 0.5rem;
+}
+
+@media (max-width: 768px) {
+  .admin-upload-page .table-responsive {
+    font-size: 0.85rem;
+  }
+}

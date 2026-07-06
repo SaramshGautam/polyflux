@@ -36,12 +36,12 @@ import {
   doc,
   getDoc,
   getDocs,
+  addDoc,
   orderBy,
   query,
   setDoc,
   serverTimestamp,
   onSnapshot,
-  Firestore,
 } from "firebase/firestore";
 
 import { app, db, auth, storage } from "../firebaseConfig";
@@ -56,8 +56,6 @@ import { MicrophoneTool } from "../tools/MicrophoneTool";
 import CustomActionsMenu from "./CustomActionsMenu";
 import { upsertImageUrl } from "../utils/registershapes";
 import { createToggleRecorder } from "../utils/audioRecorder";
-// import { MiniWhiteboard } from "../MiniWhiteboard";
-// import ViewerPortal from "../ViewerPortal";
 import { useCanvasActionHistory } from "./useCanvasActionHistory";
 import RobotDock from "./RobotDock";
 import UnderExploreDivegence from "../assets/UnderExploreDivegence.mp4";
@@ -72,8 +70,8 @@ import PhaseNudgeBadges from "./whiteboard/PhaseNudgeBadges";
 import { createNamedNoteShapeUtil } from "./NamedNoteShapeUtil";
 import { createNamedShapeUtils } from "./NamedShapeUtils";
 import { UserContext } from "./UserContext";
-// import { PublicRegionShapeUtil } from "./canvashelpers/PublicRegionShapeUtil";
 import SessionSpeechCapture from "./whiteboard/SessionSpeechCapture";
+import CanvasPortal from "./canvashelpers/CanvasPortal";
 
 import {
   resolveImageUrl,
@@ -84,11 +82,6 @@ import {
 import { useProactiveNudges } from "./whiteboard/UseProactiveNudge";
 
 const CUSTOM_TOOLS = [MicrophoneTool];
-// const SHAPE_UTILS = [
-//   ...defaultShapeUtils.filter((u) => u.type !== "note"),
-//   NamedNoteShapeUtil,
-//   AudioShapeUtil,
-// ];
 const BINDING_UTILS = [...defaultBindingUtils];
 
 function useCameraPresence(
@@ -123,17 +116,15 @@ function useCameraPresence(
       if (document.hidden) return;
 
       const now = performance.now();
-      if (now - lastWrite.current < 120) return; // throttle ~8 fps
+      if (now - lastWrite.current < 120) return;
       lastWrite.current = now;
 
       const cam = editor.getCamera();
       const pageId = editor.getCurrentPageId?.();
 
-      // Cursor (Vec-like) -> plain {x, y}
       const cp = editor.inputs?.currentPagePoint;
       const cursor = cp ? { x: Number(cp.x) || 0, y: Number(cp.y) || 0 } : null;
 
-      // Viewport screen bounds (Box-like) -> plain {w, h}
       const vsb = editor.getViewportScreenBounds?.();
       const viewport = vsb
         ? {
@@ -142,7 +133,6 @@ function useCameraPresence(
           }
         : null;
 
-      // Build a JSON-safe payload (no classes / functions / NaN / Infinity)
       const payloadObj = {
         camera: {
           x: Number(cam.x) || 0,
@@ -150,14 +140,13 @@ function useCameraPresence(
           z: Number(cam.z) || 1,
         },
         pageId: pageId || null,
-        cursor, // plain or null
-        viewport, // plain or null
+        cursor,
+        viewport,
         displayName: user.displayName || user.email || "anon",
         email: user.email || null,
         photoURL: user.photoURL || null,
       };
 
-      // Cheap change detection to avoid extra writes
       const payload = JSON.stringify(payloadObj);
       if (payload === prev) return;
       prev = payload;
@@ -167,7 +156,6 @@ function useCameraPresence(
         { ...payloadObj, lastActive: serverTimestamp() },
         { merge: true }
       ).catch((e) => {
-        // Optional: log once if something slips through
         console.log("presence write failed", e);
       });
     };
@@ -177,7 +165,6 @@ function useCameraPresence(
   }, [enabled, editorRef, className, projectName, teamName]);
 }
 
-// ✅ Trigger -> video mapping (use your imported mp4s)
 const TRIGGER_TO_VIDEO = {
   stagnant_divergence: UnderExploreDivegence,
   scattered_divergence: LongRunningDivergence,
@@ -187,7 +174,6 @@ const TRIGGER_TO_VIDEO = {
   participation_imbalance_group: ParticipationImbalance,
 };
 
-// ✅ Optional ring color/phase for the robot border
 const TRIGGER_TO_PHASE = {
   stagnant_divergence: "divergent",
   scattered_divergence: "divergent",
@@ -198,8 +184,6 @@ const TRIGGER_TO_PHASE = {
 };
 
 function normalizeShapeId(id) {
-  // If your tldraw ids already include "shape:", this does nothing.
-  // If your tldraw ids are like "1FbinxG-...", it will convert to "shape:1FbinxG-..."
   if (!id) return id;
   return id.startsWith("shape:") ? id : `shape:${id}`;
 }
@@ -226,14 +210,10 @@ function useShapeCreatedByMap(db, classroomId, projectId, teamName) {
       snap.forEach((doc) => {
         const data = doc.data();
         const shapeId = normalizeShapeId(data.shapeId || doc.id);
-        const createdBy = data.createdBy; // e.g. "P4"
+        const createdBy = data.createdBy;
         if (shapeId && createdBy) next[shapeId] = createdBy;
       });
       setShapeActorIdByShapeId(next);
-      // console.log(
-      //   "[Firestore] shapeActorIdByShapeId size:",
-      //   Object.keys(next).length
-      // );
     });
 
     return () => unsub();
@@ -268,7 +248,6 @@ function HoverActionBadge({ onIconClick }) {
     editor?.inputs?.isPanning ||
     Boolean(editor?.getEditingShapeId?.());
 
-  // Multi-select mode
   if (!isBusy && selectedIds.length > 1) {
     const bounds =
       editor.getSelectionPageBounds?.() ??
@@ -316,7 +295,6 @@ function HoverActionBadge({ onIconClick }) {
     );
   }
 
-  // Single hover mode
   if (!visibleId || isBusy) return null;
 
   const isSelected = selectedIds.includes(visibleId);
@@ -385,7 +363,6 @@ function SelectionLogger({ selectionModeActive, roomMeta, upsertImageUrlFn }) {
       return;
     }
 
-    // --- selection-mode clip sending ---
     if (selectionModeActive) {
       const prev = new Set(prevIdsRef.current);
       const curr = new Set(selectedIds);
@@ -417,7 +394,6 @@ function SelectionLogger({ selectionModeActive, roomMeta, upsertImageUrlFn }) {
       }
     }
 
-    // --- image URL upsert ---
     selectedIds.forEach((id) => {
       const shape = editor.getShape(id);
       if (!shape || shape.type !== "image") return;
@@ -454,7 +430,6 @@ const CollaborativeWhiteboard = () => {
 
   const [commentCounts, setCommentCounts] = useState({});
   const [comments, setComments] = useState({});
-  // const [actionHistory, setActionHistory] = useState([]);
   const [userRole, setUserRole] = useState(null);
   const editorInstance = useRef(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -477,11 +452,24 @@ const CollaborativeWhiteboard = () => {
 
   const [aiEnabled, setAiEnabled] = useState(true);
 
-  // speech capture state
   const prevSpeechCountRef = useRef(0);
   const speechBootstrapDoneRef = useRef(false);
 
-  // --- bridge refs (anything used inside Tldraw components that changes) ---
+  const [canvasMode, setCanvasMode] = useState("public");
+  const currentUserId =
+    auth.currentUser?.uid || auth.currentUser?.email || "anon";
+  const isPublicMode = canvasMode === "public";
+
+  const [isDraggingSelection, setIsDraggingSelection] = useState(false);
+  const [isPortalDropReady, setIsPortalDropReady] = useState(false);
+  const pendingPublishShapesRef = useRef(null);
+  const pointerScreenRef = useRef({ x: 0, y: 0 });
+
+  const portalDropReadyRef = useRef(false);
+  useEffect(() => {
+    portalDropReadyRef.current = isPortalDropReady;
+  }, [isPortalDropReady]);
+
   const panelCollapsedRef = useRef(isPanelCollapsed);
 
   useEffect(() => {
@@ -498,21 +486,18 @@ const CollaborativeWhiteboard = () => {
   const [isPhasePulsing, setIsPhasePulsing] = useState(false);
   const [phaseNudgePreview, setPhaseNudgePreview] = useState("");
 
-  // ✅ Robot animation state
   const [robotSrc, setRobotSrc] = useState(DefaultMp4);
   const [robotLoop, setRobotLoop] = useState(true);
   const [robotPhase, setRobotPhase] = useState(null);
-  const ROBOT_GAP_PX = 10; // how many px above the minimap/panel
+  const ROBOT_GAP_PX = 10;
   const [chatbotOpen, setChatbotOpen] = useState(false);
-  const ROBOT_SIZE = 50; // must match <RobotDock size={...} />
+  const ROBOT_SIZE = 50;
 
   const [robotPosition, setRobotPosition] = useState({ left: 16, bottom: 158 });
 
   const actorLabelById = useMemo(() => {
     const m = {};
     (sessionActors || []).forEach((a) => {
-      // a.id is presence doc id (likely user.uid)
-      // but your createdBy might be "P4" etc — see note below.
       m[a.id] = a.label || a.email || a.id;
     });
     return m;
@@ -547,7 +532,6 @@ const CollaborativeWhiteboard = () => {
     });
 
     return [
-      // remove the defaults for these types, then add your named ones
       ...defaultShapeUtils.filter(
         (u) => !["note", "text", "image"].includes(u.type)
       ),
@@ -555,7 +539,6 @@ const CollaborativeWhiteboard = () => {
       NamedText,
       NamedImage,
       AudioShapeUtil,
-      // PublicRegionShapeUtil,
     ];
   }, []);
 
@@ -571,11 +554,9 @@ const CollaborativeWhiteboard = () => {
 
       const rect = el.getBoundingClientRect();
 
-      // Place robot directly ABOVE the nav panel (collapsed or expanded)
       const left = Math.round(rect.left);
       const top = Math.round(rect.top - ROBOT_GAP_PX - ROBOT_SIZE);
 
-      // Clamp to viewport a bit (optional)
       const safeLeft = Math.max(
         8,
         Math.min(left, window.innerWidth - ROBOT_SIZE - 8)
@@ -589,22 +570,18 @@ const CollaborativeWhiteboard = () => {
       el = document.querySelector('[data-navpanel="true"]');
       if (!el) return false;
 
-      // Resize observer catches collapse/expand + internal layout changes
       ro = new ResizeObserver(() => {
         cancelAnimationFrame(raf);
         raf = requestAnimationFrame(update);
       });
       ro.observe(el);
 
-      // Window resize can change fixed UI positions
       window.addEventListener("resize", update);
 
-      // Initial
       update();
       return true;
     };
 
-    // Try now, and if not found yet, retry briefly
     if (!bind()) {
       const id = setInterval(() => {
         if (bind()) clearInterval(id);
@@ -619,40 +596,12 @@ const CollaborativeWhiteboard = () => {
     };
   }, [editorReady]);
 
-  // const createPublicRegion = useCallback(() => {
-  //   const editor = editorInstance.current;
-  //   if (!editor) return;
-
-  //   const bounds = editor.getViewportPageBounds();
-  //   const x = (bounds.minX + bounds.maxX) / 2 - 160;
-  //   const y = (bounds.minY + bounds.maxY) / 2 - 110;
-
-  //   editor.createShape({
-  //     id: createShapeId(),
-  //     type: "public-region",
-  //     x,
-  //     y,
-  //     props: {
-  //       w: 320,
-  //       h: 220,
-  //       label: "Common Space",
-  //     },
-  //     meta: {
-  //       isPublicRegion: true,
-  //       ownerId: auth.currentUser?.uid || auth.currentUser?.email || "anon",
-  //       visibility: "public",
-  //     },
-  //   });
-  // }, []);
-
   const lastTriggerRef = useRef(null);
   const NUDGE_COOLDOWN_MS = 120_000;
 
-  // Global cooldown: after we emit an auto nudge, don't call /analyze again for 120s
   const autoGlobalCooldownUntilRef = useRef(0);
 
-  // Same-trigger cooldown: don't emit same trigger again for 120s
-  const autoTriggerCooldownMapRef = useRef({}); // { [triggerId]: lastEmittedAtMs }
+  const autoTriggerCooldownMapRef = useRef({});
 
   const [robotCountdownEndsAt, setRobotCountdownEndsAt] = useState(null);
 
@@ -664,7 +613,6 @@ const CollaborativeWhiteboard = () => {
       auth.currentUser?.displayName || auth.currentUser?.email || "anon";
   }, []);
 
-  // prevents infinite loops when we call editor.updateShape inside a listener
   const stampingRef = useRef(false);
 
   useEffect(() => {
@@ -686,9 +634,7 @@ const CollaborativeWhiteboard = () => {
           ? Object.values(entry.changes.updated)
           : [];
 
-        // Helper to handle both add + update
         const maybeStamp = (rec) => {
-          // tldraw records: shape records typically have typeName === "shape"
           if (!rec) return;
           const isShapeRecord =
             rec.typeName === "shape" ||
@@ -712,16 +658,6 @@ const CollaborativeWhiteboard = () => {
             nextMeta.ownerId = ownerId;
           }
 
-          // if (shape.type === "public-region") {
-          //   nextMeta.visibility = "public";
-          //   nextMeta.isPublicRegion = true;
-          // } else {
-          //   const computedVisibility = recomputeShapeVisibility(editor, shape);
-          //   nextMeta.visibility =
-          //     computedVisibility || nextMeta.visibility || "private";
-          // }
-
-          // Avoid no-op updates
           const same =
             shape.meta?.createdBy === nextMeta.createdBy &&
             shape.meta?.updatedBy === nextMeta.updatedBy &&
@@ -737,20 +673,17 @@ const CollaborativeWhiteboard = () => {
               meta: nextMeta,
             });
           } finally {
-            // release on next tick so we don't re-enter immediately
             setTimeout(() => {
               stampingRef.current = false;
             }, 0);
           }
         };
 
-        // On add: stamp createdBy + updatedBy
         for (const rec of added) maybeStamp(rec);
 
-        // On update: stamp updatedBy
         for (const rec of updated) maybeStamp(rec);
       },
-      { scope: "user" } // IMPORTANT: only local user's actions
+      { scope: "user" }
     );
 
     return () => {
@@ -785,8 +718,6 @@ const CollaborativeWhiteboard = () => {
 
       console.log("[RobotDock] Playing animation for trigger:", triggerId);
 
-      // Optional: avoid replaying the same trigger repeatedly
-      // if (lastTriggerRef.current === triggerId) return;
       lastTriggerRef.current = triggerId;
 
       const vid = TRIGGER_TO_VIDEO[triggerId];
@@ -803,7 +734,6 @@ const CollaborativeWhiteboard = () => {
       const endsAt = Date.now() + TRIGGER_DURATION_MS;
       setRobotCountdownEndsAt(endsAt);
 
-      // Play once; RobotDock will revert via onEnded
       setRobotSrc(vid);
       setRobotLoop(true);
 
@@ -814,12 +744,207 @@ const CollaborativeWhiteboard = () => {
     [revertRobotToDefault]
   );
 
-  // const revertRobotToDefault = useCallback(() => {
-  //   setRobotLoop(true);
-  //   setRobotSrc(DefaultMp4);
-  //   setRobotPhase(null);
-  //   lastTriggerRef.current = null;
-  // }, []);
+  const handlePortalToggle = useCallback(() => {
+    setCanvasMode((prev) => (prev === "public" ? "private" : "public"));
+  }, []);
+
+  const roomId = useMemo(
+    () =>
+      className && projectName && teamName
+        ? `collaBoard-${className}-${projectName}-${teamName}`
+        : null,
+    [className, projectName, teamName]
+  );
+
+  const store = useSync({
+    uri: roomId
+      ? `https://tldraw-sync-server.saramshgautam.workers.dev/connect/${roomId}`
+      : "",
+    roomId: roomId || "",
+    shapeUtils: shapeUtilsMemo,
+    bindingUtils: BINDING_UTILS,
+  });
+
+  // Give the private canvas its own synced room, scoped to this user and
+  // this team room, instead of a local-only createTLStore(). This is what
+  // makes the private canvas (a) survive a page reload and (b) actually
+  // have something in it for the CanvasPortal preview to show.
+  const privateRoomId = useMemo(
+    () => (roomId ? `${roomId}-private-${currentUserId}` : ""),
+    [roomId, currentUserId]
+  );
+
+  const privateStore = useSync({
+    uri: privateRoomId
+      ? `https://tldraw-sync-server.saramshgautam.workers.dev/connect/${privateRoomId}`
+      : "",
+    roomId: privateRoomId,
+    shapeUtils: shapeUtilsMemo,
+    bindingUtils: BINDING_UTILS,
+  });
+
+  const getPortalRect = useCallback(() => {
+    const el = document.querySelector('[data-canvas-portal="true"]');
+    console.log("[portal] found element:", !!el);
+    return el ? el.getBoundingClientRect() : null;
+  }, []);
+
+  const isPointNearPortal = useCallback(
+    (x, y) => {
+      const rect = getPortalRect();
+      if (!rect) return false;
+
+      const expand = 90;
+      return (
+        x >= rect.left - expand &&
+        x <= rect.right + expand &&
+        y >= rect.top - expand &&
+        y <= rect.bottom + expand
+      );
+    },
+    [getPortalRect]
+  );
+
+  const publishShapesToPublic = useCallback(
+    (shapeIds) => {
+      const editor = editorInstance.current;
+      if (!editor || !shapeIds?.length) return;
+      if (canvasMode !== "private") return;
+
+      const shapes = shapeIds.map((id) => editor.getShape(id)).filter(Boolean);
+
+      if (!shapes.length) return;
+
+      const bounds = editor.getViewportPageBounds();
+      const baseX = (bounds.minX + bounds.maxX) / 2;
+      const baseY = (bounds.minY + bounds.maxY) / 2;
+
+      const preparedShapes = shapes.map((shape, index) => ({
+        ...shape,
+        id: createShapeId(),
+        x: baseX + index * 24,
+        y: baseY + index * 24,
+        meta: {
+          ...(shape.meta || {}),
+          publishedFromPrivate: true,
+          publishedAt: Date.now(),
+        },
+      }));
+
+      pendingPublishShapesRef.current = preparedShapes;
+
+      console.log("[portal] queued shapes for publish:", preparedShapes);
+
+      setCanvasMode("public");
+    },
+    [canvasMode]
+  );
+
+  useEffect(() => {
+    if (!editorReady) return;
+    if (!isPublicMode) return;
+
+    const editor = editorInstance.current;
+    const queuedShapes = pendingPublishShapesRef.current;
+
+    if (!editor || !queuedShapes?.length) return;
+
+    try {
+      editor.createShapes(queuedShapes);
+      console.log("[portal] published queued shapes into public canvas");
+      pendingPublishShapesRef.current = null;
+    } catch (err) {
+      console.error(
+        "[portal] failed to create queued shapes in public canvas:",
+        err
+      );
+    }
+  }, [editorReady, isPublicMode]);
+
+  useEffect(() => {
+    const handlePointerMove = (e) => {
+      pointerScreenRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+      };
+    };
+
+    window.addEventListener("pointermove", handlePointerMove, {
+      passive: true,
+    });
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!editorReady) return;
+    if (canvasMode !== "private") {
+      setIsDraggingSelection(false);
+      setIsPortalDropReady(false);
+      return;
+    }
+
+    let rafId = 0;
+
+    const tick = () => {
+      const editor = editorInstance.current;
+
+      if (!editor) {
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      const selectedIds = editor.getSelectedShapeIds?.() || [];
+      const isDragging = !!editor.inputs?.isDragging;
+
+      if (!selectedIds.length || !isDragging) {
+        setIsDraggingSelection((prev) => (prev ? false : prev));
+        setIsPortalDropReady((prev) => (prev ? false : prev));
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      setIsDraggingSelection((prev) => (prev ? prev : true));
+
+      const { x, y } = pointerScreenRef.current || { x: 0, y: 0 };
+      const ready = isPointNearPortal(x, y);
+
+      console.log("[portal] drag check", {
+        pointer: pointerScreenRef.current,
+        ready,
+        selectedCount: selectedIds.length,
+        canvasMode,
+      });
+
+      setIsPortalDropReady((prev) => (prev === ready ? prev : ready));
+
+      rafId = requestAnimationFrame(tick);
+    };
+
+    const onPointerUp = () => {
+      const editor = editorInstance.current;
+      if (!editor) return;
+
+      const selectedIds = editor.getSelectedShapeIds?.() || [];
+
+      if (portalDropReadyRef.current && selectedIds.length) {
+        publishShapesToPublic(selectedIds);
+      }
+
+      setIsDraggingSelection(false);
+      setIsPortalDropReady(false);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    window.addEventListener("pointerup", onPointerUp);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [editorReady, canvasMode, isPointNearPortal, publishShapesToPublic]);
 
   const nudgeHoverPrevSelectionRef = useRef(null);
 
@@ -836,7 +961,7 @@ const CollaborativeWhiteboard = () => {
     className,
     projectName,
     teamName,
-    enabled: editorReady,
+    enabled: editorReady && isPublicMode,
   });
 
   useEffect(() => {
@@ -849,11 +974,9 @@ const CollaborativeWhiteboard = () => {
     return () => clearTimeout(id);
   }, [isPhasePulsing]);
 
-  // Firestore Shape Listener
   useEffect(() => {
     if (!className || !projectName || !teamName) return;
 
-    // classrooms/{className}/Projects/{projectName}/teams/{teamName}/shapes
     const shapesCol = collection(
       db,
       "classrooms",
@@ -880,7 +1003,6 @@ const CollaborativeWhiteboard = () => {
         }));
 
         setShapesForAnalysis(shapes);
-        // console.log("[FS shapes] for analysis:", shapes);
       },
       (error) => {
         console.error("Error listening to shapes:", error);
@@ -890,7 +1012,6 @@ const CollaborativeWhiteboard = () => {
     return () => unsubscribe();
   }, [className, projectName, teamName]);
 
-  // Firestore Speech Listener
   useEffect(() => {
     if (!className || !projectName || !teamName) return;
 
@@ -926,7 +1047,6 @@ const CollaborativeWhiteboard = () => {
     return () => unsubscribe();
   }, [className, projectName, teamName]);
 
-  //  Firestore Presence Listener
   useEffect(() => {
     if (!className || !projectName || !teamName) return;
 
@@ -946,7 +1066,6 @@ const CollaborativeWhiteboard = () => {
       (snap) => {
         const actors = snap.docs.map((d) => {
           const data = d.data() || {};
-          // const id = d.id;
 
           return {
             id: d.id,
@@ -957,7 +1076,6 @@ const CollaborativeWhiteboard = () => {
           };
         });
 
-        // optional sort for nicer dropdown
         actors.sort((a, b) => (a.label || "").localeCompare(b.label || ""));
 
         setSessionActors(actors);
@@ -1011,12 +1129,83 @@ const CollaborativeWhiteboard = () => {
     );
   }, [normalizedSpeechForAnalysis]);
 
+  useEffect(() => {
+    if (!className || !projectName || !teamName) return;
+
+    const nudgesRef = collection(
+      db,
+      "classrooms",
+      className,
+      "Projects",
+      projectName,
+      "teams",
+      teamName,
+      "nudges"
+    );
+
+    const q = query(nudgesRef, orderBy("createdAt", "desc"));
+    const myUid = auth.currentUser?.uid;
+    const SEEN_IDS = new Set();
+
+    const unsub = onSnapshot(q, (snap) => {
+      snap.docChanges().forEach((change) => {
+        if (change.type !== "added") return;
+
+        const docId = change.doc.id;
+        if (SEEN_IDS.has(docId)) return;
+        SEEN_IDS.add(docId);
+
+        const data = change.doc.data();
+
+        if (data.expiresAt && Date.now() > data.expiresAt) return;
+
+        if (data.publishedBy === myUid) return;
+
+        const trigger = data.trigger || {};
+        const text = (trigger.user_text || "").trim();
+        const chips = Array.isArray(trigger.chips) ? trigger.chips : [];
+
+        setPhaseTailShapeIds(data.tailShapeIds || []);
+        setCurrentPhaseDetail(data.metrics || null);
+        setIsPhasePulsing(true);
+        playTriggerAnimation(trigger.id);
+        const phaseName =
+          data.metrics?.current_phase_dc ||
+          data.metrics?.current_phase_full ||
+          null;
+        if (phaseName) setCurrentPhaseName(phaseName);
+        if (text) setPhaseNudgePreview(text);
+
+        if (text) {
+          window.dispatchEvent(
+            new CustomEvent("trigger-chatbot", {
+              detail: {
+                text,
+                chips,
+                role: trigger.role || null,
+                phase: data.metrics?.current_phase_dc || null,
+                meta: {
+                  trigger,
+                  scope: "public",
+                  triggerId: trigger.id,
+                  tailShapeIds: data.tailShapeIds || [],
+                  currentPhase: data.metrics || null,
+                },
+                source: "public-nudge",
+              },
+            })
+          );
+        }
+      });
+    });
+
+    return () => unsub();
+  }, [className, projectName, teamName, playTriggerAnimation]);
+
   const actorsFromFS = useMemo(() => {
     const set = new Set();
     (shapesForAnalysis || []).forEach((s) => {
       if (s.createdBy) set.add(s.createdBy);
-      // if later you add updatedBy in firestore, include it:
-      // if (s.updatedBy) set.add(s.updatedBy);
     });
     return Array.from(set).sort();
   }, [shapesForAnalysis]);
@@ -1056,7 +1245,6 @@ const CollaborativeWhiteboard = () => {
       console.log("tailShapeIds (from event):", tailShapeIds);
 
       if (active && tailShapeIds.length) {
-        // Save current selection once at hover start
         if (!nudgeHoverPrevSelectionRef.current) {
           try {
             const currentSel = editor.getSelectedShapeIds();
@@ -1068,7 +1256,6 @@ const CollaborativeWhiteboard = () => {
           }
         }
 
-        // Check which of these shapes actually exist
         const validIds = tailShapeIds.filter((id) => {
           const shape = editor.getShape(id);
           const exists = !!shape;
@@ -1096,7 +1283,6 @@ const CollaborativeWhiteboard = () => {
         return;
       }
 
-      // Hover ended or nothing active: restore previous selection
       const prev = nudgeHoverPrevSelectionRef.current;
       console.log("[Canvas] Hover end. Previous selection to restore:", prev);
 
@@ -1139,7 +1325,6 @@ const CollaborativeWhiteboard = () => {
     if (!editor) return;
 
     const handleRequestSelection = () => {
-      // 1. Build selection summary (handles multi-select)
       const selection = makeSelectionSummary(editor);
 
       if (!selection.ids || selection.ids.length === 0) {
@@ -1147,10 +1332,8 @@ const CollaborativeWhiteboard = () => {
         return;
       }
 
-      // 2. Build the same payload Ask AI uses (with meta.selection)
       const payload = buildAiPayloadFromSelection(selection, editor);
 
-      // 3. Reuse the same flow: send it as trigger-chatbot
       window.dispatchEvent(
         new CustomEvent("trigger-chatbot", {
           detail: payload,
@@ -1169,28 +1352,6 @@ const CollaborativeWhiteboard = () => {
       );
     };
   }, [editorReady]);
-
-  const roomId = useMemo(
-    () =>
-      className && projectName && teamName
-        ? `collaBoard-${className}-${projectName}-${teamName}`
-        : null,
-    [className, projectName, teamName]
-  );
-
-  const store = useSync({
-    uri: roomId
-      ? `https://tldraw-sync-server.saramshgautam.workers.dev/connect/${roomId}`
-      : "",
-    roomId: roomId || "",
-    // store: customStore,
-    shapeUtils: shapeUtilsMemo,
-    bindingUtils: BINDING_UTILS,
-  });
-
-  // const toggleSidebar = useCallback(() => {
-  //   setIsSidebarOpen((prev) => !prev);
-  // }, []);
 
   const handleToggleSidebar = useCallback(() => {
     setShowSidebar((prev) => !prev);
@@ -1212,41 +1373,6 @@ const CollaborativeWhiteboard = () => {
       }
     });
   }, []);
-
-  // useEffect(() => {
-  //   if (editorInstance) {
-  //     saveCanvasPreview();
-  //   }
-  //   return () => {
-  //     saveCanvasPreview();
-  //   };
-  // }, [store]);
-
-  // useEffect(() => {
-  //   if (!editorReady) return;
-  //   if (!className || !projectName || !teamName) return;
-
-  //   const handleBeforeUnload = (event) => {
-  //     // Fire and forget – we can't `await` here
-  //     saveCanvasPreview();
-  //   };
-
-  //   window.addEventListener("beforeunload", handleBeforeUnload);
-
-  //   return () => {
-  //     window.removeEventListener("beforeunload", handleBeforeUnload);
-  //     // Component is unmounting (user navigated away from whiteboard route)
-  //     saveCanvasPreview();
-  //   };
-  // }, [editorReady, className, projectName, teamName]);
-
-  // const togglePanel = () => {
-  //   console.log("[Parent] togglePanel called");
-  //   setIsPanelCollapsed((prev) => {
-  //     console.log("[Parent] Collapsed before:", prev, " → after:", !prev);
-  //     return !prev;
-  //   });
-  // };
 
   const togglePanel = useCallback(() => {
     setIsPanelCollapsed((p) => !p);
@@ -1275,15 +1401,6 @@ const CollaborativeWhiteboard = () => {
     return `${mm}:${ss}`;
   };
 
-  // const components = {
-  //   Navbar: Navbar,
-  //   ContextMenu: CustomContextMenu,
-  //   InFrontOfTheCanvas: ContextToolbarComponent,
-  //   Toolbar: DefaultToolbar,
-  //   // Toolbar: CustomToolbar,
-  //   ActionsMenu: CustomActionsMenu,
-  // };
-
   const addComment = useCallback((shapeId, commentData) => {
     console.log("Adding comment for shapeId:", shapeId);
 
@@ -1308,47 +1425,6 @@ const CollaborativeWhiteboard = () => {
       return updatedCounts;
     });
   }, []);
-
-  // const saveCanvasPreview = useCallback(async () => {
-  //   const editor = editorInstance.current;
-  //   if (!editor || !className || !projectName || !teamName) return;
-
-  //   const shapeIds = editor.getCurrentPageShapeIds();
-  //   if (!shapeIds || shapeIds.size === 0) return;
-
-  //   try {
-  //     // 1) Render the current page shapes to a PNG blob
-  //     const { blob } = await editor.toImage([...shapeIds], {
-  //       format: "png",
-  //       padding: 20,
-  //       background: "white", // optional: ensure white background instead of transparent
-  //     });
-
-  //     // 2) Upload to Firebase Storage
-  //     const path = `previews/${className}/${projectName}/${teamName}.png`;
-  //     const imgRef = ref(storage, path);
-
-  //     await uploadBytes(imgRef, blob, { contentType: "image/png" });
-  //     const downloadURL = await getDownloadURL(imgRef);
-
-  //     // 3) Save previewUrl to the team document in Firestore
-  //     const teamRef = doc(
-  //       db,
-  //       "classrooms",
-  //       className,
-  //       "Projects",
-  //       projectName,
-  //       "teams",
-  //       teamName
-  //     );
-
-  //     await setDoc(teamRef, { previewUrl: downloadURL }, { merge: true });
-
-  //     console.log("✅ Canvas preview saved:", path);
-  //   } catch (error) {
-  //     console.error("Error saving canvas preview:", error);
-  //   }
-  // }, [className, projectName, teamName]);
 
   const uploadToFirebase = useCallback(async (blob) => {
     try {
@@ -1410,7 +1486,6 @@ const CollaborativeWhiteboard = () => {
         setElapsed("0:00");
 
         const url = await uploadToFirebase(blob);
-        // const { x, y } = editor.getViewportScreenCenter();
         const bounds = editor.getViewportPageBounds();
         const x = (bounds.minX + bounds.maxX) / 2;
         const y = (bounds.minY + bounds.maxY) / 2;
@@ -1608,7 +1683,6 @@ const CollaborativeWhiteboard = () => {
     fetchActionHistoryRef.current = fetchActionHistory;
   }, [fetchActionHistory]);
 
-  // room meta & helpers used inside InFront components
   const roomMetaRef = useRef({ className, projectName, teamName });
   useEffect(() => {
     roomMetaRef.current = { className, projectName, teamName };
@@ -1619,18 +1693,11 @@ const CollaborativeWhiteboard = () => {
     upsertImageUrlRef.current = upsertImageUrl;
   }, [upsertImageUrl]);
 
-  // Navigation panel data
   const actorOptionsRef = useRef(actorOptions);
   useEffect(() => {
     actorOptionsRef.current = actorOptions;
   }, [actorOptions]);
 
-  // const shapeActorIdByShapeIdRef = useRef(shapeActorIdByShapeId);
-  // useEffect(() => {
-  //   shapeActorIdByShapeIdRef.current = shapeActorIdByShapeId;
-  // }, [shapeActorIdByShapeId]);
-
-  // Recording UI bits (avoid re-creating Toolbar component)
   const elapsedRef = useRef(elapsed);
   useEffect(() => {
     elapsedRef.current = elapsed;
@@ -1648,14 +1715,12 @@ const CollaborativeWhiteboard = () => {
       const payload = {
         canvasId: `${className}_${projectName}_${teamName}`,
         shapes: shapesForAnalysis || [],
-        // speech: speechForAnalysis || [],
         speech: normalizedSpeechForAnalysis || [],
         source,
       };
 
       console.log("[Analyze] Payload:", payload);
 
-      // const res = await fetch("http://127.0.0.1:8060/analyze", {
       const res = await fetch(
         "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
         {
@@ -1692,77 +1757,99 @@ const CollaborativeWhiteboard = () => {
 
     const metrics = data?.current_phase ?? data?.currentPhase ?? null;
 
+    const triggerWithScope = trigger
+      ? { ...trigger, scope: trigger.scope ?? "public" }
+      : null;
+
     return {
       tailShapeIds,
       metrics,
-      trigger, // ✅ keep full trigger object (user_text, chips, role, dedupe_key, id, ...)
+      trigger: triggerWithScope,
     };
   }
 
+  const publishPublicNudge = useCallback(
+    async ({ trigger, tailShapeIds, metrics }) => {
+      if (!className || !projectName || !teamName) return;
+      const nudgesRef = collection(
+        db,
+        "classrooms",
+        className,
+        "Projects",
+        projectName,
+        "teams",
+        teamName,
+        "nudges"
+      );
+      await addDoc(nudgesRef, {
+        trigger,
+        tailShapeIds: tailShapeIds || [],
+        metrics: metrics || null,
+        publishedBy: auth.currentUser?.uid || "anon",
+        createdAt: serverTimestamp(),
+        expiresAt: Date.now() + 120_000,
+      });
+    },
+    [className, projectName, teamName]
+  );
+
   const pushNudgeToChatbot = useCallback(
     ({ source, tailShapeIds, metrics, trigger }) => {
-      // 1) If no real trigger, do nothing
       if (!trigger || !trigger.id) return;
 
       const text = (trigger?.user_text || "").trim();
       const chips = Array.isArray(trigger?.chips) ? trigger.chips : [];
+      const scope = trigger?.scope ?? "public";
 
-      // 2) Update parent UI state (badges / background / robot) ONLY if trigger exists
       setPhaseTailShapeIds(tailShapeIds || []);
       setCurrentPhaseDetail(metrics || null);
 
       const phaseName =
         metrics?.current_phase_dc || metrics?.current_phase_full || null;
-
       if (phaseName) setCurrentPhaseName(phaseName);
 
       setPhaseNudgePreview(text);
       setIsPhasePulsing(true);
-
       playTriggerAnimation(trigger.id);
 
       if (source === "proactive" && text) {
         const now = Date.now();
-
-        // Same-trigger cooldown
         const lastAt = autoTriggerCooldownMapRef.current[trigger.id] || 0;
         if (now - lastAt < NUDGE_COOLDOWN_MS) {
-          // don't emit the same trigger again yet
           return;
         }
 
-        // mark emitted times
         autoTriggerCooldownMapRef.current[trigger.id] = now;
         autoGlobalCooldownUntilRef.current = now + NUDGE_COOLDOWN_MS;
 
+        const chatbotPayload = {
+          text,
+          chips,
+          role: trigger?.role || null,
+          phase: metrics?.current_phase_dc || null,
+          meta: {
+            trigger,
+            scope,
+            dedupe_key: trigger?.dedupe_key || null,
+            triggerId: trigger.id,
+            tailShapeIds: tailShapeIds || [],
+            currentPhase: metrics || null,
+          },
+          source: scope === "public" ? "public-nudge" : "auto-nudge",
+        };
+
+        if (scope === "public") {
+          publishPublicNudge({ trigger, tailShapeIds, metrics }).catch(
+            console.error
+          );
+        }
+
         window.dispatchEvent(
-          new CustomEvent("trigger-chatbot", {
-            detail: {
-              text,
-              chips,
-              role: trigger?.role || null,
-              phase: metrics?.current_phase_dc || null,
-              meta: {
-                trigger,
-                dedupe_key: trigger?.dedupe_key || null,
-                triggerId: trigger.id,
-                tailShapeIds: tailShapeIds || [],
-                currentPhase: metrics || null,
-              },
-              source: "auto-nudge",
-            },
-          })
+          new CustomEvent("trigger-chatbot", { detail: chatbotPayload })
         );
       }
-
-      // if (source === "proactive" && text) {
-      //   setExternalMessages((prev) => [
-      //     ...prev,
-      //     { role: "assistant", type: "nudge", content: text, meta: { triggerId: trigger.id } },
-      //   ]);
-      // }
     },
-    [playTriggerAnimation]
+    [playTriggerAnimation, publishPublicNudge]
   );
 
   const onProactiveResult = useCallback(
@@ -1771,7 +1858,6 @@ const CollaborativeWhiteboard = () => {
 
       const trigger = data?.trigger || null;
       if (!trigger || !trigger.id) {
-        // revertRobotToDefault();
         return;
       }
 
@@ -1791,7 +1877,7 @@ const CollaborativeWhiteboard = () => {
   const { requestAnalyze, bumpActivity } = useProactiveNudges({
     editorRef: editorInstance,
     editorReady,
-    enabled: aiEnabled,
+    enabled: aiEnabled && isPublicMode,
 
     analyzeFn,
     onResult: onProactiveResult,
@@ -1808,7 +1894,6 @@ const CollaborativeWhiteboard = () => {
 
     const currentCount = normalizedSpeechForAnalysis.length;
 
-    // First load: don't treat existing historical speech as new activity
     if (!speechBootstrapDoneRef.current) {
       prevSpeechCountRef.current = currentCount;
       speechBootstrapDoneRef.current = true;
@@ -1824,7 +1909,6 @@ const CollaborativeWhiteboard = () => {
 
     const recentUtterances = normalizedSpeechForAnalysis.slice(-delta);
 
-    // Ignore super-short or low-value chunks
     const meaningfulUtterances = recentUtterances.filter((u) => {
       const text = String(u.text || "").trim();
       const words = text.split(/\s+/).filter(Boolean);
@@ -1843,28 +1927,21 @@ const CollaborativeWhiteboard = () => {
     prevSpeechCountRef.current = currentCount;
   }, [normalizedSpeechForAnalysis, aiEnabled, editorReady, bumpActivity]);
 
-  // --- Proactive analyze trigger (bolt-like, but automatic) ---
   const proactiveRef = useRef({
     eventCount: 0,
     firstEventAt: 0,
     lastAnalyzeAt: 0,
     idleTimer: null,
     forceTimer: null,
-    inFlight: null, // AbortController
+    inFlight: null,
   });
 
   function ToolbarComp(props) {
-    // read editor & any global UI state here via hooks/refs/context as needed
-    return <DefaultToolbar {...props} /* render your mic button etc. */ />;
+    return <DefaultToolbar {...props} />;
   }
 
   function ContextMenuComp(props) {
-    return (
-      <CustomContextMenu
-        {...props}
-        /* read state inside or via a custom hook instead of closing over parent state */
-      />
-    );
+    return <CustomContextMenu {...props} />;
   }
 
   function InFrontComp(props) {
@@ -1872,66 +1949,12 @@ const CollaborativeWhiteboard = () => {
       <>
         <SelectionLogger />
         <ContextToolbarComponent {...props} />
-        <HoverActionBadge
-          onIconClick={/* stable callback via ref (below) */ undefined}
-        />
-        <PhaseNudgeBadges /* read needed state internally */ />
+        <HoverActionBadge onIconClick={undefined} />
+        <PhaseNudgeBadges />
       </>
     );
   }
 
-  // function getShapeCenter(bounds) {
-  //   return {
-  //     x: (bounds.minX + bounds.maxX) / 2,
-  //     y: (bounds.minY + bounds.maxY) / 2,
-  //   };
-  // }
-
-  // function pointInBounds(point, bounds) {
-  //   return (
-  //     point.x >= bounds.minX &&
-  //     point.x <= bounds.maxX &&
-  //     point.y >= bounds.minY &&
-  //     point.y <= bounds.maxY
-  //   );
-  // }
-
-  // const recomputeShapeVisibility = useCallback((editor, shape) => {
-  //   if (!shape) return null;
-  //   if (shape.type === "public-region") return null;
-
-  //   const bounds = editor.getShapePageBounds(shape.id);
-  //   if (!bounds) return null;
-
-  //   const center = getShapeCenter(bounds);
-
-  //   const allShapes = editor.getCurrentPageShapes();
-  //   const publicRegions = allShapes.filter((s) => s.type === "public-region");
-
-  //   const isInsidePublicRegion = publicRegions.some((region) => {
-  //     const regionBounds = editor.getShapePageBounds(region.id);
-  //     if (!regionBounds) return false;
-  //     return pointInBounds(center, regionBounds);
-  //   });
-
-  //   return isInsidePublicRegion ? "public" : "private";
-  // }, []);
-
-  // const getSharedShapeVisibility = useCallback((shape) => {
-  //   if (shape.type === "public-region") return "inherit";
-
-  //   const ownerId = shape.meta?.ownerId;
-  //   const visibility = shape.meta?.visibility || "private";
-  //   const currentUserId =
-  //     auth.currentUser?.uid || auth.currentUser?.email || "anon";
-
-  //   if (visibility === "public") return "inherit";
-  //   if (ownerId === currentUserId) return "inherit";
-
-  //   return "hidden";
-  // }, []);
-
-  // 2) Pass a stable components object (NO deps)
   const components = useMemo(
     () => ({
       Toolbar: ToolbarComp,
@@ -1961,7 +1984,6 @@ const CollaborativeWhiteboard = () => {
         return makeSelectionSummary(editor);
       }, [editor, selectedKey]);
 
-      // NOTE: setters are stable; safe to call directly
       useEffect(() => {
         setSelectedTargets(selection.ids);
       }, [selection.ids]);
@@ -2033,65 +2055,6 @@ const CollaborativeWhiteboard = () => {
 
       return (
         <DefaultToolbar {...props}>
-          {/* <button
-            type="button"
-            onClick={createPublicRegion}
-            style={{
-              position: "fixed",
-              top: 70,
-              left: 180,
-              zIndex: 10090,
-              padding: "8px 14px",
-              borderRadius: 8,
-              border: "1px solid #ccc",
-              background: "#2563eb",
-              color: "white",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            ✉️
-          </button> */}
-          {/* <button
-            type="button"
-            className="tlui-button tlui-button--icon"
-            aria-pressed={isMicSelected}
-            title={
-              isRecordingRef.current
-                ? `Stop recording • ${elapsedRef.current} / ${formatMs(
-                    30000
-                  )} (auto-stops at ${formatMs(30000)})`
-                : `Record (auto-stops at ${formatMs(30000)})`
-            }
-            style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
-            onClick={async () => {
-              if (!isRecordingRef.current) {
-                await startRecordingRef.current?.();
-              } else {
-                await stopRecordingRef.current?.(editor);
-              }
-            }}
-          >
-            {isRecordingRef.current ? (
-              <>
-                <FontAwesomeIcon
-                  icon={faCircleStop}
-                  style={{ color: "red", fontSize: 14 }}
-                />
-                <span
-                  style={{
-                    fontFamily: "monospace",
-                    fontVariantNumeric: "tabular-nums",
-                  }}
-                >
-                  {elapsedRef.current}/{formatMs(30000)}
-                </span>
-              </>
-            ) : (
-              <FontAwesomeIcon icon={faMicrophone} style={{ fontSize: 16 }} />
-            )}
-          </button> */}
-
           <DefaultToolbarContent />
         </DefaultToolbar>
       );
@@ -2134,7 +2097,7 @@ const CollaborativeWhiteboard = () => {
     return {
       actorId: u?.uid || u?.email || "anon",
       actorName: u?.displayName || u?.email?.split("@")[0] || "Anonymous",
-      shapeActorIdByShapeId, // ✅ add it here
+      shapeActorIdByShapeId,
     };
   }, [
     auth.currentUser?.uid,
@@ -2142,8 +2105,6 @@ const CollaborativeWhiteboard = () => {
     auth.currentUser?.email,
     shapeActorIdByShapeId,
   ]);
-
-  // const backgroundColor = getPhaseBackground();
 
   const toolsMemo = useMemo(() => [...defaultTools, ...CUSTOM_TOOLS], []);
 
@@ -2158,50 +2119,76 @@ const CollaborativeWhiteboard = () => {
         }`}
         style={{ position: "fixed", inset: 0 }}
       >
+        <div
+          style={{
+            position: "fixed",
+            top: 72,
+            left: 20,
+            zIndex: 10100,
+            padding: "6px 10px",
+            borderRadius: 999,
+            background: "rgba(255,255,255,0.92)",
+            border: "1px solid rgba(0,0,0,0.08)",
+            boxShadow: "0 4px 14px rgba(0,0,0,0.08)",
+            fontSize: 12,
+            fontWeight: 700,
+            color: "#334155",
+          }}
+        >
+          Mode: {isPublicMode ? "Public" : "Private"}
+        </div>
+
         <UserContext.Provider value={userCtxValue}>
           <Tldraw
+            key={canvasMode}
             onMount={(editor) => {
-              console.log("[Canvas] Tldraw onMount fired ✅", {
+              console.log("[Canvas] Tldraw onMount fired", {
                 hasEditor: !!editor,
+                mode: canvasMode,
+
                 hasStore: !!editor?.store,
                 hasListen: !!editor?.store?.listen,
               });
               editorInstance.current = editor;
-              console.log("[Canvas] editorInstance.current set ✅", {
+              console.log("[Canvas] editorInstance.current set", {
                 hasEditorRef: !!editorInstance.current,
               });
               setEditorReady(true);
-              // if (editorInstance) {
-              //   saveCanvasPreview();
-              // }
             }}
-            store={store}
-            // schema={schema}
+            store={isPublicMode ? store : privateStore}
             tools={toolsMemo}
             shapeUtils={shapeUtilsMemo}
             overrides={uiOverrides}
             components={tldrawComponents}
-            // getShapeVisibility={getSharedShapeVisibility}
           />
         </UserContext.Provider>
 
-        <SessionSpeechCapture
-          className={className}
-          projectName={projectName}
-          teamName={teamName}
+        <CanvasPortal
+          canvasMode={canvasMode}
+          onToggle={handlePortalToggle}
+          isDraggingSelection={isDraggingSelection}
+          isDragPublishReady={isPortalDropReady}
+          otherStore={isPublicMode ? privateStore : store}
+          shapeUtils={shapeUtilsMemo}
+          bindingUtils={BINDING_UTILS}
         />
+
+        {isPublicMode && (
+          <SessionSpeechCapture
+            className={className}
+            projectName={projectName}
+            teamName={teamName}
+          />
+        )}
 
         <RobotDock
           src={robotSrc}
           loop={robotLoop}
-          // onEnded={!robotLoop ? revertRobotToDefault : null}
           onEnded={null}
           phase={robotPhase || currentPhaseName}
-          // phase={currentPhaseName}
           countdownEndsAt={robotCountdownEndsAt}
           countdownDurationMs={30000}
           show={true}
-          // position={{ left: 16, bottom: 158 }}
           position={robotPosition}
           size={ROBOT_SIZE}
           onOpenChat={() => setChatbotOpen(true)}
@@ -2210,7 +2197,6 @@ const CollaborativeWhiteboard = () => {
 
         {!showSidebar && (
           <ChatBot
-            // toggleSidebar={toggleSidebar}
             messages={messages}
             setMessages={setMessages}
             externalMessages={externalMessages}
@@ -2218,7 +2204,6 @@ const CollaborativeWhiteboard = () => {
             user_id={
               auth.currentUser?.displayName || auth.currentUser?.email || "anon"
             }
-            // canvasId={roomId}
             canvasId={`${className}_${projectName}_${teamName}`}
             role={"catalyst"}
             targets={selectedTargets}
@@ -2232,12 +2217,11 @@ const CollaborativeWhiteboard = () => {
               source,
               trigger,
             }) => {
-              // This is a BUTTON nudge; update badges/robot/background only.
               pushNudgeToChatbot({
                 source: source || "button",
                 tailShapeIds,
                 metrics: currentPhase,
-                trigger, // make sure ChatBot passes the full trigger object here
+                trigger,
               });
             }}
             nudgeFocusShapeId={nudgeFocusShapeId}

@@ -1,23 +1,25 @@
-/* Navbar layout */
 .navbar {
+  --nb-accent: #4f6df5;
+  --nb-accent-dark: #3b52c4;
+  --nb-bg: #232733;
+  --nb-border: #383d4d;
+  --nb-surface: #ffffff;
+  --nb-border-light: #e4e7f0;
+  --nb-text-muted: #6b7280;
+
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 10px 20px;
-  background-color: #53555d;
-  /* background-color: linear-gradient(135deg, #53555d, #6b6d75); */
-  color: white;
+  background-color: var(--nb-bg);
+  color: #ffffff;
   z-index: 1000;
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  height: 60px; /* Adjust navbar height */
+  height: 60px;
 }
-
-/* body {
-  padding-top: 60px; 
-} */
 
 /* Or if you're using a wrapper div */
 .content-wrapper {
@@ -30,10 +32,12 @@
 }
 
 .navbar-title {
-  font-size: 24px;
-  font-weight: bold;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   margin-right: 20px;
   cursor: pointer;
+  color: #ffffff;
 }
 
 .navbar-links {
@@ -42,14 +46,14 @@
 }
 
 .navbar-links a {
-  color: white;
+  color: rgba(255, 255, 255, 0.85);
   text-decoration: none;
   font-size: 16px;
-  transition: color 0.3s ease;
+  transition: color 0.15s ease;
 }
 
 .navbar-links a:hover {
-  color: #f1f1f1; /* Light hover color */
+  color: #ffffff;
 }
 
 .navbar-right {
@@ -67,62 +71,80 @@
 /* Profile icon */
 .bi-person {
   font-size: 24px;
-  color: white;
+  color: #ffffff;
 }
 
-/* Profile dropdown menu (Bootstrap style) */
+/* Profile dropdown menu */
 .dropdown-menu {
   display: none;
   position: absolute;
   top: 60px;
   right: 20px;
-  background-color: #000000; /* Ash background for dropdown */
-  border-radius: 5px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+  background-color: var(--nb-surface);
+  border: 1px solid var(--nb-border-light);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(35, 39, 51, 0.16);
+  padding: 6px;
   z-index: 1001;
 }
 
-.dropdown-menu .dropdown-item {
-  color: white;
-  font-size: 1rem;
-  padding: 10px 20px;
-  display: flex;
-  align-items: center;
-}
-
-.dropdown-menu .dropdown-item i {
-  font-size: 18px;
-}
-
-.dropdown-menu .dropdown-item:hover {
-  background-color: #030303; /* Slightly lighter ash color */
-}
-
-/* Show the dropdown when active */
 .dropdown-menu.show {
   display: block;
 }
 
-/* Improved logout button styled like the 'Add Classroom' button */
 .dropdown-menu .dropdown-item {
-  font-weight: 600;
+  color: #232733;
+  font-size: 0.95rem;
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   background-color: transparent;
   border: none;
   cursor: pointer;
-  transition: background-color 0.3s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.dropdown-menu {
-  background-color: rgb(52, 58, 64, 255); /* Slate Blue */
+.dropdown-menu .dropdown-item i {
+  font-size: 18px;
+  color: var(--nb-text-muted);
 }
 
 .dropdown-menu .dropdown-item:hover {
-  background-color: rgb(52, 58, 64, 255); /* Darker Slate Blue */
+  background-color: #eef2ff;
+  color: var(--nb-accent-dark);
 }
 
-/* Use the btn-dark for the logout button */
+.dropdown-menu .dropdown-item:hover i {
+  color: var(--nb-accent-dark);
+}
+
+/* Logout button, styled like the pill buttons elsewhere in the app */
 .dropdown-menu .btn-sm {
-  font-size: 0.875rem; /* Smaller size */
-  padding: 5px 10px; /* Adjust the padding to make it smaller */
-  width: auto; /* Ensure the button doesn't stretch */
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 6px 14px;
+  width: auto;
+  border-radius: 999px;
+  background-color: var(--nb-accent);
+  color: #ffffff;
+  border: none;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.dropdown-menu .btn-sm:hover {
+  background-color: var(--nb-accent-dark);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 576px) {
+  .navbar {
+    padding: 10px 14px;
+  }
+
+  .navbar-links {
+    gap: 12px;
+  }
 }

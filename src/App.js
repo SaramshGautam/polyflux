@@ -30,6 +30,7 @@ import { signInWithPopup } from "firebase/auth";
 import { app, db, auth, googleProvider, storage } from "./firebaseConfig";
 import "./App.css";
 import Navbar from "./components/navbar/Navbar";
+import AdminUploadPage from "./components/AdminUploadPage";
 
 const App = () => {
   const navigate = useNavigate();
@@ -123,6 +124,7 @@ const App = () => {
           </>
         }
       />
+      <Route path="/admin/upload" element={<AdminUploadPage />} />
 
       {/* Classroom Management */}
       <Route
