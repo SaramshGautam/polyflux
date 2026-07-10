@@ -359,6 +359,230 @@ export async function ensureImageInStorageAndGetUrl({
 //   }
 // }
 
+// export async function registerShape(newShape, userContext, editor) {
+//   if (!newShape || !userContext) {
+//     console.error("❌ Missing shape data or user context.");
+//     return;
+//   }
+
+//   const { id: shapeID, type: shapeType, x, y, props } = newShape;
+
+//   // console.log(
+//   //   `Registering shape ${shapeID} of type ${shapeType} at position (${x}, ${y}) with props:`,
+//   //   props
+//   // );
+//   const { className, projectName, teamName, userId } = userContext;
+
+//   if (
+//     !shapeID ||
+//     !shapeType ||
+//     !className ||
+//     !projectName ||
+//     !teamName ||
+//     !userId
+//   ) {
+//     console.error(
+//       "❌ Missing required fields: shapeID, shapeType, className, projectName, teamName, or userId."
+//     );
+//     return;
+//   }
+
+//   try {
+//     const shapeRef = doc(
+//       db,
+//       "classrooms",
+//       className,
+//       "Projects",
+//       projectName,
+//       "teams",
+//       teamName,
+//       "shapes",
+//       shapeID
+//     );
+
+//     const shapeDoc = {
+//       shapeId: shapeID,
+//       shapeType,
+//       position: { x, y },
+//       text: props?.text || "",
+//       color: props?.color || "#000000",
+//       teamName: teamName,
+//       createdAt: serverTimestamp(),
+//       createdBy: userId,
+//       comments: [],
+//       reactions: {
+//         like: [],
+//         dislike: [],
+//         surprised: [],
+//         confused: [],
+//       },
+//     };
+
+//     let finalImageUrl = null;
+
+//     if (shapeType === "image") {
+//       console.log("[registerShape] handling image shape:", {
+//         shapeID,
+//         props,
+//       });
+
+//       let uploadProps = props || {};
+//       let inlineUrl = pickUrlFromProps(uploadProps);
+//       let blobFromProps = pickFileFromProps(uploadProps);
+
+//       if (!inlineUrl && !blobFromProps && uploadProps.assetId && editor) {
+//         const asset = editor.getAsset(uploadProps.assetId);
+//         console.log("[registerShape] asset for image:", asset);
+
+//         if (asset && asset.props && asset.props.src) {
+//           uploadProps = {
+//             ...uploadProps,
+//             src: asset.props.src,
+//           };
+//           console.log(
+//             "[registerShape] Using asset.props.src for upload:",
+//             asset.props.src && asset.props.src.slice(0, 80)
+//           );
+//         } else {
+//           console.log(
+//             "[registerShape] No asset.src found for assetId:",
+//             uploadProps.assetId
+//           );
+//         }
+//         inlineUrl = pickUrlFromProps(uploadProps);
+//         blobFromProps = pickFileFromProps(uploadProps);
+//       }
+
+//       if (inlineUrl || blobFromProps) {
+//         finalImageUrl = await ensureImageInStorageAndGetUrl({
+//           userContext,
+//           shapeId: shapeID,
+//           props: uploadProps,
+//         });
+
+//         if (!finalImageUrl) {
+//           finalImageUrl = pickUrlFromProps(uploadProps);
+//         }
+
+//         if (finalImageUrl) {
+//           console.log(
+//             "[registerShape] Got finalImageUrl on first try:",
+//             finalImageUrl
+//           );
+//           shapeDoc.url = finalImageUrl;
+//         }
+//       }
+//       if (!finalImageUrl) {
+//         console.log(
+//           "⚠️ Image shape has no resolvable URL *yet*; scheduling backfill..."
+//         );
+
+//         if (props?.assetId && editor) {
+//           scheduleImageUrlBackfill({
+//             editor,
+//             userContext,
+//             shapeId: shapeID,
+//             assetId: props.assetId,
+//           });
+//         }
+//       }
+//     }
+
+//     // let finalImageUrl = null;
+
+//     // if (shapeType === "image") {
+//     //   console.log("[registerShape] handling image shape:", {
+//     //     shapeID,
+//     //     props,
+//     //   });
+
+//     //   // Start from props as-is
+//     //   let uploadProps = props || {};
+
+//     //   // Do we already have a usable URL/file in props?
+//     //   const inlineUrl = pickUrlFromProps(uploadProps);
+//     //   const fileOrBlob = pickFileFromProps(uploadProps);
+
+//     //   // If not, fall back to the tldraw asset via assetId + editor
+//     //   if (!inlineUrl && !fileOrBlob && uploadProps.assetId && editor) {
+//     //     const asset = editor.getAsset(uploadProps.assetId);
+//     //     console.log("[registerShape] asset for image:", asset);
+
+//     //     if (asset && asset.props && asset.props.src) {
+//     //       // Inject src so ensureImageInStorageAndGetUrl can use it
+//     //       uploadProps = {
+//     //         ...uploadProps,
+//     //         src: asset.props.src,
+//     //       };
+//     //       console.log(
+//     //         "[registerShape] Using asset.props.src for upload:",
+//     //         asset.props.src.slice(0, 80)
+//     //       );
+//     //     } else {
+//     //       console.log(
+//     //         "[registerShape] No asset.src found for assetId:",
+//     //         uploadProps.assetId
+//     //       );
+//     //     }
+//     //   }
+
+//     //   // Upload / resolve final URL
+//     //   finalImageUrl = await ensureImageInStorageAndGetUrl({
+//     //     userContext,
+//     //     shapeId: shapeID,
+//     //     props: uploadProps,
+//     //   });
+
+//     //   if (!finalImageUrl) {
+//     //     // last fallback: take whatever URL-ish thing we can see
+//     //     finalImageUrl = pickUrlFromProps(uploadProps);
+//     //   }
+
+//     //   if (finalImageUrl) {
+//     //     shapeDoc.url = finalImageUrl;
+//     //     console.log(
+//     //       "[registerShape] Final image URL stored in Firestore:",
+//     //       finalImageUrl
+//     //     );
+//     //   } else {
+//     //     console.log("⚠️ Image shape has no resolvable URL.");
+//     //   }
+//     // }
+
+//     // if (shapeType === "image") {
+//     //   console.log("Registering image shape with props:", props);
+
+//     //   const url = pickUrlFromProps(props);
+//     //   if (url) {
+//     //     shapeDoc.url = url;
+//     //   } else {
+//     //     console.error(
+//     //       "⚠️ Image shape registered without a valid URL in props."
+//     //     );
+//     //   }
+//     // }
+
+//     // Store data in Firestore
+//     await setDoc(shapeRef, shapeDoc);
+//     // console.log(`✅ Shape ${shapeID} successfully added to Firestore!`);
+
+//     // await logAction(userContext, `added `, newShape.id, newShape.type);
+
+//     const move = buildMoveFromShape({
+//       action: "added",
+//       shape: newShape,
+//       userId,
+//       ts: new Date().toISOString(),
+//       overrideUrl: finalImageUrl || undefined,
+//     });
+//     await appendMoveToExportBuffer({ ...userContext, move });
+
+//     return finalImageUrl ?? null;
+//   } catch (error) {
+//     console.error("❌ Error adding shape to Firestore:", error);
+//   }
+// }
+
 export async function registerShape(newShape, userContext, editor) {
   if (!newShape || !userContext) {
     console.error("❌ Missing shape data or user context.");
@@ -366,11 +590,6 @@ export async function registerShape(newShape, userContext, editor) {
   }
 
   const { id: shapeID, type: shapeType, x, y, props } = newShape;
-
-  // console.log(
-  //   `Registering shape ${shapeID} of type ${shapeType} at position (${x}, ${y}) with props:`,
-  //   props
-  // );
   const { className, projectName, teamName, userId } = userContext;
 
   if (
@@ -400,23 +619,14 @@ export async function registerShape(newShape, userContext, editor) {
       shapeID
     );
 
-    const shapeDoc = {
-      shapeId: shapeID,
-      shapeType,
-      position: { x, y },
-      text: props?.text || "",
-      color: props?.color || "#000000",
-      teamName: teamName,
-      createdAt: serverTimestamp(),
-      createdBy: userId,
-      comments: [],
-      reactions: {
-        like: [],
-        dislike: [],
-        surprised: [],
-        confused: [],
-      },
-    };
+    // Check whether this shape already has a Firestore doc BEFORE writing
+    // anything. This matters for the "publish from private canvas" flow,
+    // which intentionally reuses the shape's original id — blindly
+    // setDoc()'ing a fresh record here would wipe out the original
+    // createdBy, createdAt, comments, and reactions the instant the
+    // republished shape gets registered again (e.g. on the public canvas).
+    const existingSnap = await getDoc(shapeRef);
+    const existingData = existingSnap.exists() ? existingSnap.data() : null;
 
     let finalImageUrl = null;
 
@@ -469,10 +679,9 @@ export async function registerShape(newShape, userContext, editor) {
             "[registerShape] Got finalImageUrl on first try:",
             finalImageUrl
           );
-          shapeDoc.url = finalImageUrl;
         }
       }
-      if (!finalImageUrl) {
+      if (!finalImageUrl && !existingData?.url) {
         console.log(
           "⚠️ Image shape has no resolvable URL *yet*; scheduling backfill..."
         );
@@ -488,85 +697,63 @@ export async function registerShape(newShape, userContext, editor) {
       }
     }
 
-    // let finalImageUrl = null;
+    if (existingData) {
+      // Re-registering a shape that already has history — most commonly,
+      // one that was just published from the private canvas and kept its
+      // original id. Update only what actually changed (position, team,
+      // text/color/url) and leave createdBy, createdAt, comments, and
+      // reactions exactly as they were.
+      const updatePayload = {
+        shapeType,
+        position: { x, y },
+        text: props?.text ?? existingData.text ?? "",
+        color: props?.color ?? existingData.color ?? "#000000",
+        teamName,
+        updatedAt: serverTimestamp(),
+      };
+      if (finalImageUrl) updatePayload.url = finalImageUrl;
 
-    // if (shapeType === "image") {
-    //   console.log("[registerShape] handling image shape:", {
-    //     shapeID,
-    //     props,
-    //   });
+      await setDoc(shapeRef, updatePayload, { merge: true });
+      console.log(
+        `[registerShape] Preserved existing metadata for ${shapeID} ` +
+          `(createdBy: ${existingData.createdBy}, ` +
+          `${(existingData.comments || []).length} comment(s), ` +
+          `reactions intact) — updated position/text/color/team only.`
+      );
 
-    //   // Start from props as-is
-    //   let uploadProps = props || {};
+      const move = buildMoveFromShape({
+        action: "updated",
+        shape: newShape,
+        userId,
+        ts: new Date().toISOString(),
+        overrideUrl: finalImageUrl || undefined,
+      });
+      await appendMoveToExportBuffer({ ...userContext, move });
 
-    //   // Do we already have a usable URL/file in props?
-    //   const inlineUrl = pickUrlFromProps(uploadProps);
-    //   const fileOrBlob = pickFileFromProps(uploadProps);
+      return finalImageUrl ?? existingData.url ?? null;
+    }
 
-    //   // If not, fall back to the tldraw asset via assetId + editor
-    //   if (!inlineUrl && !fileOrBlob && uploadProps.assetId && editor) {
-    //     const asset = editor.getAsset(uploadProps.assetId);
-    //     console.log("[registerShape] asset for image:", asset);
+    // Brand-new shape — nothing to preserve, full create as before.
+    const shapeDoc = {
+      shapeId: shapeID,
+      shapeType,
+      position: { x, y },
+      text: props?.text || "",
+      color: props?.color || "#000000",
+      teamName,
+      createdAt: serverTimestamp(),
+      createdBy: userId,
+      comments: [],
+      reactions: {
+        like: [],
+        dislike: [],
+        surprised: [],
+        confused: [],
+      },
+    };
+    if (finalImageUrl) shapeDoc.url = finalImageUrl;
 
-    //     if (asset && asset.props && asset.props.src) {
-    //       // Inject src so ensureImageInStorageAndGetUrl can use it
-    //       uploadProps = {
-    //         ...uploadProps,
-    //         src: asset.props.src,
-    //       };
-    //       console.log(
-    //         "[registerShape] Using asset.props.src for upload:",
-    //         asset.props.src.slice(0, 80)
-    //       );
-    //     } else {
-    //       console.log(
-    //         "[registerShape] No asset.src found for assetId:",
-    //         uploadProps.assetId
-    //       );
-    //     }
-    //   }
-
-    //   // Upload / resolve final URL
-    //   finalImageUrl = await ensureImageInStorageAndGetUrl({
-    //     userContext,
-    //     shapeId: shapeID,
-    //     props: uploadProps,
-    //   });
-
-    //   if (!finalImageUrl) {
-    //     // last fallback: take whatever URL-ish thing we can see
-    //     finalImageUrl = pickUrlFromProps(uploadProps);
-    //   }
-
-    //   if (finalImageUrl) {
-    //     shapeDoc.url = finalImageUrl;
-    //     console.log(
-    //       "[registerShape] Final image URL stored in Firestore:",
-    //       finalImageUrl
-    //     );
-    //   } else {
-    //     console.log("⚠️ Image shape has no resolvable URL.");
-    //   }
-    // }
-
-    // if (shapeType === "image") {
-    //   console.log("Registering image shape with props:", props);
-
-    //   const url = pickUrlFromProps(props);
-    //   if (url) {
-    //     shapeDoc.url = url;
-    //   } else {
-    //     console.error(
-    //       "⚠️ Image shape registered without a valid URL in props."
-    //     );
-    //   }
-    // }
-
-    // Store data in Firestore
     await setDoc(shapeRef, shapeDoc);
-    // console.log(`✅ Shape ${shapeID} successfully added to Firestore!`);
-
-    // await logAction(userContext, `added `, newShape.id, newShape.type);
 
     const move = buildMoveFromShape({
       action: "added",
@@ -581,6 +768,81 @@ export async function registerShape(newShape, userContext, editor) {
   } catch (error) {
     console.error("❌ Error adding shape to Firestore:", error);
   }
+}
+
+/**
+ * Flip a shape's space field only — used when a shape moves between the
+ * public and private canvases without a full re-registration.
+ */
+export async function setShapeSpace(shapeID, userContext, space) {
+  if (!shapeID || !userContext || !space) return;
+  const { className, projectName, teamName } = userContext;
+  if (!className || !projectName || !teamName) return;
+
+  const shapeRef = doc(
+    db,
+    "classrooms",
+    className,
+    "Projects",
+    projectName,
+    "teams",
+    teamName,
+    "shapes",
+    shapeID
+  );
+
+  await setDoc(
+    shapeRef,
+    { space, updatedAt: serverTimestamp() },
+    { merge: true }
+  );
+}
+
+/**
+ * Writes back preserved fields (createdBy, createdAt, comments, reactions,
+ * space) onto a shape's Firestore doc. Intended to run AFTER a
+ * publish-through-portal completes — i.e. after the shape has been
+ * deleted from its origin canvas (which may have triggered an unrelated
+ * delete-on-removal listener wiping this doc) and recreated on the
+ * destination canvas (which re-registers it as if brand new). Running
+ * this last, with the values captured before anything happened, makes
+ * the final Firestore state correct regardless of what order those two
+ * things actually resolved in.
+ */
+export async function restoreShapeMetadata(shapeID, userContext, preserved) {
+  if (!shapeID || !userContext || !preserved) return;
+  const { className, projectName, teamName } = userContext;
+  if (!className || !projectName || !teamName) return;
+
+  const shapeRef = doc(
+    db,
+    "classrooms",
+    className,
+    "Projects",
+    projectName,
+    "teams",
+    teamName,
+    "shapes",
+    shapeID
+  );
+
+  const payload = { updatedAt: serverTimestamp() };
+  if (preserved.createdBy !== undefined)
+    payload.createdBy = preserved.createdBy;
+  if (preserved.createdAt !== undefined)
+    payload.createdAt = preserved.createdAt;
+  if (preserved.comments !== undefined) payload.comments = preserved.comments;
+  if (preserved.reactions !== undefined)
+    payload.reactions = preserved.reactions;
+  if (preserved.space !== undefined) payload.space = preserved.space;
+
+  await setDoc(shapeRef, payload, { merge: true });
+  console.log(
+    `[restoreShapeMetadata] Restored ${shapeID} — createdBy: ${payload.createdBy}, ` +
+      `space: ${payload.space}, ${
+        (payload.comments || []).length
+      } comment(s) intact`
+  );
 }
 
 // export async function updateShape(shape, userContext) {

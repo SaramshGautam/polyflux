@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, useParams } from "react-router-dom";
 import "./Navbar.css";
 
 import { db, auth } from "../../firebaseConfig";
@@ -13,35 +13,33 @@ import {
 } from "firebase/firestore";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 
-const Navbar = () => {
+import SessionSpeechCapture from "../whiteboard/SessionSpeechCapture";
+
+const Navbar = ({ isPublicCanvas = true }) => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { className, projectName, teamName } = useParams();
   const isInWhiteboard = location.pathname.startsWith("/whiteboard");
   const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   const [displayName, setDisplayName] = useState("");
   const [role, setRole] = useState("");
 
-  // const homeRoute = useMemo(() => {
-  //   if (role === "teacher") return "/teachers-home";
-  //   if (role === "student" || role === "participant") return "/students-home";
-  //   return "/";
-  // }, [role]);
+  // Only show the mic in the navbar when we're actually on a whiteboard
+  // route with a resolved class/project/team AND the user is looking at
+  // the public (synced) canvas, not their private one.
+  const canCaptureSpeech =
+    isInWhiteboard &&
+    isPublicCanvas &&
+    !!className &&
+    !!projectName &&
+    !!teamName;
 
   const homeRoute = useMemo(() => {
     if (role === "teacher" || role === "student") return "/dashboard";
     if (role === "participant") return "/";
     return "/";
   }, [role]);
-
-  // const role = localStorage.getItem("role");
-  // const photoURL = localStorage.getItem("photoURL");
-  // const homeRoute =
-  //   role === "teacher"
-  //     ? "/teachers-home"
-  //     : role === "student" || role === "participant"
-  //     ? "/students-home"
-  //     : "/";
 
   const handleProfileClick = () => {
     setIsProfileOpen((prev) => !prev);
@@ -56,12 +54,6 @@ const Navbar = () => {
       navigate("/");
     }
   };
-
-  // const handleLogout = () => {
-  //   localStorage.removeItem("role");
-  //   localStorage.removeItem("photoURL");
-  //   navigate("/"); // Redirect to login page
-  // };
 
   // Close profile dropdown when clicking outside
   useEffect(() => {
@@ -83,11 +75,9 @@ const Navbar = () => {
           return;
         }
 
-        // ✅ If user has email (Google / email-password)
         const email = (user.email || "").toLowerCase();
 
         if (email) {
-          // 1) Fast path: doc id is email
           const ref = doc(db, "users", email);
           const snap = await getDoc(ref);
 
@@ -95,10 +85,9 @@ const Navbar = () => {
             const data = snap.data();
             setDisplayName((data?.name || "User").trim());
             setRole((data?.role || "").trim());
-            return; // ✅ stop here, don’t run the query too
+            return;
           }
 
-          // 2) Fallback: query by email field
           const q = query(collection(db, "users"), where("email", "==", email));
           const qsnap = await getDocs(q);
 
@@ -114,9 +103,6 @@ const Navbar = () => {
           return;
         }
 
-        // ✅ Anonymous user (participant quick login)
-        // If you want participants to show P# in Navbar, you must read participantSessions/{uid}
-        // Example:
         const uid = user.uid;
         const sessionSnap = await getDoc(doc(db, "participantSessions", uid));
 
@@ -142,7 +128,6 @@ const Navbar = () => {
   return (
     <div className="navbar">
       <div className="navbar-left">
-        {/* Logo and links */}
         <img
           src="/logo.png"
           alt="App logo"
@@ -151,64 +136,67 @@ const Navbar = () => {
         <div className="navbar-title" onClick={() => navigate(homeRoute)}>
           PolyFlux
         </div>
-        {/* <div className="navbar-links">
-          <a href="#about">About</a>
-          <a href="#contact">Contact</a>
-        </div> */}
+
+        {isInWhiteboard && (
+          <div
+            title={
+              isPublicCanvas
+                ? "You're on the shared canvas everyone can see"
+                : "You're on your private canvas"
+            }
+            style={{
+              marginLeft: 14,
+              padding: "4px 10px",
+              borderRadius: 999,
+              fontSize: 12,
+              fontWeight: 700,
+              letterSpacing: "0.02em",
+              whiteSpace: "nowrap",
+              color: isPublicCanvas ? "#c2680f" : "#0d7d7d",
+              background: isPublicCanvas
+                ? "rgba(240,140,20,0.12)"
+                : "rgba(20,150,150,0.12)",
+              border: `1px solid ${
+                isPublicCanvas
+                  ? "rgba(240,140,20,0.35)"
+                  : "rgba(20,150,150,0.35)"
+              }`,
+            }}
+          >
+            Mode: {isPublicCanvas ? "Public" : "Private"}
+          </div>
+        )}
       </div>
+
       <div className="navbar-right">
-        <ul className="nav-item dropdown">
+        {canCaptureSpeech && (
+          <SessionSpeechCapture
+            className={className}
+            projectName={projectName}
+            teamName={teamName}
+          />
+        )}
+
+        <ul
+          className="nav-item dropdown"
+          style={{
+            position: "relative",
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
           <li className="nav-link dropdown-toggle" onClick={handleProfileClick}>
-            {/* {photoURL ? (
-              <img
-                src={photoURL}
-                alt="Profile"
-                className="profile-picture"
-                style={{
-                  width: "35px",
-                  height: "35px",
-                  borderRadius: "50%",
-                  objectFit: "cover",
-                  cursor: "pointer",
-                  border: "2px solid white",
-                }}
-              />
-            ) : (
-              <i
-                className="bi bi-person"
-                style={{ fontSize: "24px", color: "white" }}
-              ></i>
-            )} */}
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              {/* Initials avatar */}
-              <div
-                style={{
-                  width: "34px",
-                  height: "34px",
-                  borderRadius: "50%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontWeight: 700,
-                  fontSize: "14px",
-                  background: "rgba(255,255,255,0.18)",
-                  border: "2px solid white",
-                  color: "white",
-                  userSelect: "none",
-                }}
-                title={displayName || "User"}
-              >
+              <div className="navbar-avatar" title={displayName || "User"}>
                 {displayName || ""}
               </div>
             </div>
           </li>
-          {/* Dropdown Menu */}
           <ul className={`dropdown-menu ${isProfileOpen ? "show" : ""}`}>
             {isInWhiteboard && (
               <li>
                 <a
                   className="dropdown-item btn btn-dark btn-sm"
-                  // href="https://lsu.qualtrics.com/jfe/form/SV_ea1qXwTavlQNfv0"
                   href="https://lsu.qualtrics.com/jfe/form/SV_09zhlg18ScvPSmi"
                   target="_blank"
                   rel="noopener noreferrer"

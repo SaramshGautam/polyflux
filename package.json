@@ -20,6 +20,7 @@
     "file-saver": "^2.0.5",
     "firebase": "^11.2.0",
     "jsmediatags-web": "^0.0.4",
+    "pdfjs-dist": "^6.1.200",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-draggable": "^4.5.0",

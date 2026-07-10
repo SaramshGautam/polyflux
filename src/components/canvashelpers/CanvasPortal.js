@@ -7,6 +7,151 @@ import React, {
 } from "react";
 import { Tldraw } from "tldraw";
 
+// ---------------------------------------------------------------------------
+// Offscreen preview hook
+//
+// Instead of rendering a live, interactive `<Tldraw>` inside the visible
+// circle (which drags in tldraw's own camera/tool state, a watermark link,
+// and constant remount/resync churn), we mount a SECOND, fully offscreen
+// tldraw editor pointed at the same store. Its only job is to export the
+// current page's shapes to an SVG string whenever the document changes.
+// The visible portal circle then just renders that SVG as a plain <img>,
+// which is trivial to clip into a circle and can never show tldraw's own
+// UI chrome, watermark, or camera drift.
+// ---------------------------------------------------------------------------
+function usePreviewImage(store) {
+  const editorRef = useRef(null);
+  const debounceRef = useRef(null);
+  const currentUrlRef = useRef(null);
+
+  const [imgUrl, setImgUrl] = useState(null);
+  const [hasShapes, setHasShapes] = useState(false);
+
+  const exportSvg = useCallback(async (editor, ids) => {
+    // API name differs across tldraw major versions — try both.
+    if (typeof editor.getSvgString === "function") {
+      const res = await editor.getSvgString(ids, {
+        background: false,
+        padding: 16,
+      });
+      return res?.svg ?? null;
+    }
+    if (typeof editor.getSvg === "function") {
+      const svgEl = await editor.getSvg(ids, {
+        background: false,
+        padding: 16,
+      });
+      return svgEl ? new XMLSerializer().serializeToString(svgEl) : null;
+    }
+    console.error(
+      "[CanvasPortal] No SVG export method found on this tldraw editor " +
+        "instance (checked getSvgString and getSvg). Check your installed " +
+        "tldraw version's export API."
+    );
+    return null;
+  }, []);
+
+  const refresh = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    try {
+      const allRecords = editor.store?.allRecords?.() ?? [];
+      const shapeRecords = allRecords.filter((r) => r.typeName === "shape");
+
+      if (!shapeRecords.length) {
+        setHasShapes(false);
+        setImgUrl(null);
+        return;
+      }
+
+      setHasShapes(true);
+
+      // Same "find the page that actually has content" heuristic as
+      // before — top-level shapes have parentId === their page's id.
+      const currentPageId = editor.getCurrentPageId?.();
+      const shapesOnCurrentPage = shapeRecords.filter(
+        (s) => s.parentId === currentPageId
+      ).length;
+
+      let targetPageId = currentPageId;
+      if (shapesOnCurrentPage === 0) {
+        const shapeOnOtherPage = shapeRecords.find(
+          (s) =>
+            typeof s.parentId === "string" && s.parentId.startsWith("page:")
+        );
+        if (shapeOnOtherPage) targetPageId = shapeOnOtherPage.parentId;
+      }
+
+      if (targetPageId && targetPageId !== editor.getCurrentPageId?.()) {
+        editor.setCurrentPage?.(targetPageId);
+      }
+
+      const idsOnPage = Array.from(editor.getCurrentPageShapeIds?.() ?? []);
+
+      if (!idsOnPage.length) {
+        setImgUrl(null);
+        return;
+      }
+
+      const svgString = await exportSvg(editor, idsOnPage);
+      if (!svgString) return;
+
+      const blob = new Blob([svgString], { type: "image/svg+xml" });
+      const url = URL.createObjectURL(blob);
+
+      // Revoke the previous object URL so we don't leak memory on every
+      // edit — but only after the new one is set, to avoid a flash of
+      // no-image between swaps.
+      const prevUrl = currentUrlRef.current;
+      currentUrlRef.current = url;
+      setImgUrl(url);
+      if (prevUrl) URL.revokeObjectURL(prevUrl);
+    } catch (err) {
+      console.error("[CanvasPortal] preview export failed:", err);
+    }
+  }, [exportSvg]);
+
+  const handleHiddenMount = useCallback(
+    (editor) => {
+      editorRef.current = editor;
+      try {
+        editor.updateInstanceState?.({ isReadonly: true });
+      } catch (err) {
+        console.error("[CanvasPortal] readonly setup failed:", err);
+      }
+      refresh();
+
+      const unlisten = editor.store?.listen(
+        (entry) => {
+          if (!entry?.changes) return;
+          clearTimeout(debounceRef.current);
+          debounceRef.current = setTimeout(() => refresh(), 500);
+        },
+        { source: "all", scope: "document" }
+      );
+
+      return () => {
+        clearTimeout(debounceRef.current);
+        unlisten?.();
+      };
+    },
+    [refresh]
+  );
+
+  // Clean up the last object URL when the store changes or we unmount.
+  useEffect(() => {
+    return () => {
+      if (currentUrlRef.current) {
+        URL.revokeObjectURL(currentUrlRef.current);
+        currentUrlRef.current = null;
+      }
+    };
+  }, [store]);
+
+  return { imgUrl, hasShapes, handleHiddenMount };
+}
+
 const CanvasPortal = ({
   canvasMode = "public",
   onToggle,
@@ -16,32 +161,41 @@ const CanvasPortal = ({
   otherStore = null,
   shapeUtils = [],
   bindingUtils = [],
+  // Bump this to any new value (e.g. Date.now()) to trigger a brief
+  // "arrival" flash on the ring — used as the payoff moment when a
+  // fly-into-the-portal animation finishes.
+  arrivalPulse = null,
 }) => {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const tRef = useRef(0);
   const sparksRef = useRef([]);
-  const miniEditorRef = useRef(null);
   const [hovered, setHovered] = useState(false);
-  const [previewHasShapes, setPreviewHasShapes] = useState(false);
-  const [debugInfo, setDebugInfo] = useState(null);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const [isArriving, setIsArriving] = useState(false);
+  const buttonRef = useRef(null);
+  const lastPulseRef = useRef(arrivalPulse);
+
+  useEffect(() => {
+    if (arrivalPulse == null || arrivalPulse === lastPulseRef.current) return;
+    lastPulseRef.current = arrivalPulse;
+    setIsArriving(true);
+    const t = setTimeout(() => setIsArriving(false), 520);
+    return () => clearTimeout(t);
+  }, [arrivalPulse]);
 
   const isPublic = canvasMode === "public";
   const portalActive = hovered || isDragPublishReady;
 
-  // --- DEBUG: fires on every render, so you can see if/when `otherStore`
-  // actually becomes non-null, and whether it's a new object each time
-  // (which would force the mini <Tldraw> to remount and lose its fit).
-  // Remove once resolved.
-  useEffect(() => {
-    console.log("[CanvasPortal] otherStore prop changed", {
-      canvasMode,
-      otherStoreProvided: !!otherStore,
-      otherStoreType: otherStore?.constructor?.name,
-    });
-    setPreviewHasShapes(false);
-  }, [otherStore, canvasMode]);
-  const SIZE = isDragPublishReady ? 116 : portalActive ? 100 : 88;
+  const { imgUrl, hasShapes, handleHiddenMount } = usePreviewImage(otherStore);
+
+  const SIZE = isArriving
+    ? 130
+    : isDragPublishReady
+    ? 116
+    : portalActive
+    ? 112
+    : 88;
   const HALF = SIZE / 2;
   const INNER = Math.round(SIZE * 0.42); // was 0.34 — bigger preview window
   const OUTER = Math.round(SIZE * 0.485);
@@ -80,7 +234,11 @@ const CanvasPortal = ({
     a ${TEXT_RADIUS},${TEXT_RADIUS} 0 1,1 -0.01,0
   `;
 
-  const miniComponents = useMemo(
+  // The offscreen editor still needs the full shape/binding util set so it
+  // can render the same custom shapes (audio, pdf, named notes, etc.) that
+  // the real canvases use — otherwise custom shapes silently fail to draw
+  // and get skipped from the export.
+  const hiddenComponents = useMemo(
     () => ({
       MainMenu: () => null,
       PageMenu: () => null,
@@ -96,157 +254,6 @@ const CanvasPortal = ({
     []
   );
 
-  const handleMiniMount = useCallback(
-    (editor) => {
-      miniEditorRef.current = editor;
-
-      try {
-        editor.updateInstanceState?.({ isReadonly: true });
-        editor.setCurrentTool?.("hand");
-      } catch (err) {
-        console.error("[CanvasPortal] readonly/tool setup failed:", err);
-      }
-
-      // The previous version only checked getCurrentPageShapeIds() — if the
-      // shapes actually live on a different page than the one this fresh
-      // mini-editor instance defaults to, that check reports zero even
-      // though the store genuinely has content. This version checks ALL
-      // shape records in the store (not just the current page), and if it
-      // finds shapes living on a page other than the current one, switches
-      // the mini editor to that page before fitting.
-      let fitTimer = null;
-      const scheduleFit = (reason) => {
-        clearTimeout(fitTimer);
-        fitTimer = setTimeout(() => {
-          try {
-            const allRecords = editor.store?.allRecords?.() ?? [];
-            const shapeRecords = allRecords.filter(
-              (r) => r.typeName === "shape"
-            );
-            const currentPageId = editor.getCurrentPageId?.();
-            const shapesOnCurrentPage =
-              editor.getCurrentPageShapeIds?.().size ?? 0;
-
-            // Top-level shapes have parentId === their page's id (e.g.
-            // "page:page"). Nested shapes (inside frames/groups) point at
-            // another shape instead, so this only catches top-level ones —
-            // enough to tell us which page(s) actually have content.
-            let targetPageId = currentPageId;
-            if (shapesOnCurrentPage === 0 && shapeRecords.length > 0) {
-              const shapeOnOtherPage = shapeRecords.find(
-                (s) =>
-                  typeof s.parentId === "string" &&
-                  s.parentId.startsWith("page:")
-              );
-              if (shapeOnOtherPage) targetPageId = shapeOnOtherPage.parentId;
-            }
-
-            const debugSnapshot = {
-              canvasMode,
-              reason,
-              totalRecords: allRecords.length,
-              totalShapeRecords: shapeRecords.length,
-              shapesOnCurrentPage,
-              currentPageId,
-              targetPageId,
-            };
-            console.log("[CanvasPortal] shape check", debugSnapshot);
-
-            const hasContent = shapeRecords.length > 0;
-            setPreviewHasShapes(hasContent);
-
-            if (hasContent) {
-              if (
-                targetPageId &&
-                targetPageId !== editor.getCurrentPageId?.()
-              ) {
-                try {
-                  editor.setCurrentPage?.(targetPageId);
-                  console.log(
-                    "[CanvasPortal] switched mini editor to page with content:",
-                    targetPageId
-                  );
-                } catch (err) {
-                  console.error("[CanvasPortal] setCurrentPage failed:", err);
-                }
-              }
-
-              editor.zoomToFit?.();
-
-              // At this window size (roughly 70-140px), zoomToFit can end up
-              // zooming out so far to fit everything that individual shapes
-              // shrink to sub-pixel smears — which looks identical to a flat
-              // dark circle. Cap how far out it can go and show a legible
-              // crop instead. (zoomToBounds's targetZoom option turned out
-              // not to take effect in this tldraw version, so this sets the
-              // camera directly instead, using the same x/y = page-space
-              // top-left-corner convention already used in ViewerPortal.jsx's
-              // cameraFromViewport().)
-              const MIN_PREVIEW_ZOOM = 0.2;
-              const camAfterFit = editor.getCamera?.();
-              if (camAfterFit && camAfterFit.z < MIN_PREVIEW_ZOOM) {
-                try {
-                  const bounds = editor.getCurrentPageBounds?.();
-                  const vsb = editor.getViewportScreenBounds?.();
-                  if (bounds && vsb && vsb.width && vsb.height) {
-                    const z = MIN_PREVIEW_ZOOM;
-                    const cx = (bounds.minX + bounds.maxX) / 2;
-                    const cy = (bounds.minY + bounds.maxY) / 2;
-                    const camX = cx - vsb.width / 2 / z;
-                    const camY = cy - vsb.height / 2 / z;
-                    editor.setCamera?.({ x: camX, y: camY, z });
-                  }
-                } catch (err) {
-                  console.error(
-                    "[CanvasPortal] min-zoom override failed:",
-                    err
-                  );
-                }
-              }
-
-              console.log(
-                "[CanvasPortal] zoomToFit done, camera now:",
-                editor.getCamera?.()
-              );
-              setDebugInfo({
-                ...debugSnapshot,
-                cameraZ: editor.getCamera?.()?.z,
-              });
-            } else {
-              setDebugInfo(debugSnapshot);
-            }
-          } catch (err) {
-            console.error("[CanvasPortal] shape check / zoomToFit threw:", err);
-          }
-        }, 250);
-      };
-
-      scheduleFit("initial mount"); // attempt immediately in case shapes are already there
-
-      let unlisten;
-      try {
-        unlisten = editor.store?.listen(
-          (entry) => {
-            // Only re-fit on real document changes (new/moved/removed shapes),
-            // not on every camera or pointer update.
-            if (entry?.changes) scheduleFit("store change");
-          },
-          { source: "all", scope: "document" }
-        );
-      } catch (err) {
-        console.error("[CanvasPortal] store.listen failed to attach:", err);
-      }
-
-      // tldraw calls this cleanup automatically when the mini editor unmounts
-      // (e.g. when `canvasMode` flips and the `key` changes).
-      return () => {
-        clearTimeout(fitTimer);
-        unlisten?.();
-      };
-    },
-    [canvasMode, otherStore]
-  );
-
   useEffect(() => {
     sparksRef.current = Array.from({ length: 70 }, () => ({
       angle: Math.random() * Math.PI * 2,
@@ -257,6 +264,30 @@ const CanvasPortal = ({
       flickerOffset: Math.random() * Math.PI * 2,
       colorIdx: Math.floor(Math.random() * 3),
     }));
+  }, []);
+
+  // Scroll-to-zoom on the preview. Attached as a native listener with
+  // { passive: false } rather than React's onWheel — React 17+ registers
+  // wheel handlers as passive at the root by default for scroll
+  // performance, which silently ignores preventDefault() and lets the
+  // page scroll underneath the portal instead of zooming it.
+  useEffect(() => {
+    const el = buttonRef.current;
+    if (!el) return;
+
+    const MIN_ZOOM = 1;
+    const MAX_ZOOM = 3.5;
+
+    const handleWheel = (e) => {
+      e.preventDefault();
+      setPreviewZoom((z) => {
+        const next = z - e.deltaY * 0.0018;
+        return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next));
+      });
+    };
+
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
   }, []);
 
   useEffect(() => {
@@ -379,17 +410,18 @@ const CanvasPortal = ({
     return () => cancelAnimationFrame(animRef.current);
   }, [SIZE, INNER, OUTER, isPublic]);
 
-  const portalGlow = isPublic
-    ? `0 0 ${portalActive ? 28 : 14}px rgba(240,140,20,0.55), 0 0 ${
-        portalActive ? 56 : 28
-      }px rgba(240,100,10,0.28)`
-    : `0 0 ${portalActive ? 28 : 14}px rgba(20,200,200,0.55), 0 0 ${
-        portalActive ? 56 : 28
-      }px rgba(10,160,180,0.28)`;
+  const glowNear = isArriving ? 44 : portalActive ? 28 : 14;
+  const glowFar = isArriving ? 90 : portalActive ? 56 : 28;
 
-  const fallbackBg = isPublic
-    ? "radial-gradient(ellipse at 30% 25%, #1a2a5e 0%, #0d1a3a 40%, #060d1f 75%, #020408 100%)"
-    : "radial-gradient(ellipse at 30% 25%, #0d2a1a 0%, #081a10 40%, #030e07 75%, #010501 100%)";
+  const portalGlow = isPublic
+    ? `0 0 ${glowNear}px rgba(240,140,20,${
+        isArriving ? 0.85 : 0.55
+      }), 0 0 ${glowFar}px rgba(240,100,10,${isArriving ? 0.5 : 0.28})`
+    : `0 0 ${glowNear}px rgba(20,200,200,${
+        isArriving ? 0.85 : 0.55
+      }), 0 0 ${glowFar}px rgba(10,160,180,${isArriving ? 0.5 : 0.28})`;
+
+  const fallbackBg = "#ffffff";
 
   const windowDiameter = INNER * 2;
 
@@ -438,6 +470,7 @@ const CanvasPortal = ({
 
         <div style={{ margin: PADDING, pointerEvents: "auto" }}>
           <button
+            ref={buttonRef}
             data-canvas-portal="true"
             type="button"
             onClick={() => {
@@ -445,7 +478,10 @@ const CanvasPortal = ({
               onToggle?.();
             }}
             onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
+            onMouseLeave={() => {
+              setHovered(false);
+              setPreviewZoom(1);
+            }}
             title={sublabel}
             style={{
               width: SIZE,
@@ -479,56 +515,41 @@ const CanvasPortal = ({
             >
               {otherStore ? (
                 <>
-                  {/* Live read-only mini canvas */}
-                  <div
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      pointerEvents: "none",
-                    }}
-                  >
-                    <Tldraw
-                      key={canvasMode}
-                      store={otherStore}
-                      shapeUtils={shapeUtils}
-                      bindingUtils={bindingUtils}
-                      components={miniComponents}
-                      onMount={handleMiniMount}
-                      hideUi
+                  {imgUrl ? (
+                    <img
+                      src={imgUrl}
+                      alt=""
+                      style={{
+                        position: "absolute",
+                        inset: 0,
+                        width: "100%",
+                        height: "100%",
+                        objectFit: "contain",
+                        pointerEvents: "none",
+                        transform: `scale(${previewZoom})`,
+                        transformOrigin: "center center",
+                        transition: hovered
+                          ? "transform 60ms linear"
+                          : "transform 220ms ease-out",
+                      }}
                     />
-                  </div>
+                  ) : null}
 
-                  {/* Colour tint — makes it look like another world.
-                      Kept light (was 0.3) so real content isn't washed out. */}
-                  <div
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      background: isPublic
-                        ? "rgba(10, 20, 60, 0.12)"
-                        : "rgba(5, 30, 20, 0.12)",
-                      pointerEvents: "none",
-                    }}
-                  />
-
-                  {/* Vignette to blend edges into the ring — pushed further
-                      out and lightened (was transparent 38% / 0.75 black)
-                      so it only darkens the rim, not the whole preview. */}
+                  {/* Soft vignette to blend the image edges into the ring,
+                      tuned for a white background instead of a dark one. */}
                   <div
                     style={{
                       position: "absolute",
                       inset: 0,
                       borderRadius: "50%",
                       background:
-                        "radial-gradient(circle, transparent 55%, rgba(0,0,0,0.45) 100%)",
+                        "radial-gradient(circle, transparent 60%, rgba(0,0,0,0.10) 100%)",
                       pointerEvents: "none",
                     }}
                   />
 
-                  {/* Empty-state: the store is connected but genuinely has
-                      no shapes on it yet. Without this, an empty store and
-                      a broken preview look identical (a plain dark circle). */}
-                  {!previewHasShapes && (
+                  {/* Empty-state: store connected, but genuinely no shapes. */}
+                  {!hasShapes && (
                     <div
                       style={{
                         position: "absolute",
@@ -554,6 +575,32 @@ const CanvasPortal = ({
                       </span>
                     </div>
                   )}
+
+                  {/* Offscreen, export-only editor. Never visible — it's
+                      positioned far off the viewport rather than
+                      display:none/opacity:0, since some tldraw internals
+                      skip layout work on elements with no rendered box. */}
+                  <div
+                    style={{
+                      position: "fixed",
+                      left: -9999,
+                      top: -9999,
+                      width: 400,
+                      height: 400,
+                      pointerEvents: "none",
+                    }}
+                    aria-hidden="true"
+                  >
+                    <Tldraw
+                      key={canvasMode}
+                      store={otherStore}
+                      shapeUtils={shapeUtils}
+                      bindingUtils={bindingUtils}
+                      components={hiddenComponents}
+                      onMount={handleHiddenMount}
+                      hideUi
+                    />
+                  </div>
                 </>
               ) : (
                 /* Fallback starfield when no store is provided */
@@ -567,7 +614,7 @@ const CanvasPortal = ({
                           width: `${Math.random() * 1.5 + 0.4}px`,
                           height: `${Math.random() * 1.5 + 0.4}px`,
                           borderRadius: "50%",
-                          background: "white",
+                          background: "#94a3b8",
                           left: `${Math.random() * 100}%`,
                           top: `${Math.random() * 100}%`,
                           opacity: Math.random() * 0.6 + 0.2,
@@ -586,7 +633,7 @@ const CanvasPortal = ({
                       inset: 0,
                       borderRadius: "50%",
                       background:
-                        "radial-gradient(circle, transparent 38%, rgba(0,0,0,0.75) 100%)",
+                        "radial-gradient(circle, transparent 55%, rgba(0,0,0,0.12) 100%)",
                       pointerEvents: "none",
                     }}
                   />
@@ -609,33 +656,6 @@ const CanvasPortal = ({
               }}
             />
           </button>
-
-          {/* TEMPORARY DEBUG READOUT — remove once the preview is confirmed
-              working. No devtools needed to read this. */}
-          {debugInfo && (
-            <div
-              style={{
-                marginTop: 6,
-                pointerEvents: "none",
-                background: "rgba(0,0,0,0.75)",
-                color: "#fff",
-                fontSize: 9,
-                lineHeight: 1.4,
-                padding: "4px 6px",
-                borderRadius: 6,
-                whiteSpace: "nowrap",
-                fontFamily: "monospace",
-              }}
-            >
-              mode:{debugInfo.canvasMode} shapes:{debugInfo.totalShapeRecords}{" "}
-              onPage:{debugInfo.shapesOnCurrentPage} zoom:
-              {debugInfo.cameraZ?.toFixed(3) ?? "n/a"}
-              <br />
-              page:{String(debugInfo.currentPageId).replace("page:", "")}
-              {"->"}
-              {String(debugInfo.targetPageId).replace("page:", "")}
-            </div>
-          )}
         </div>
       </div>
 

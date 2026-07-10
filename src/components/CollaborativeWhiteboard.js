@@ -30,6 +30,7 @@ import {
   faRobot,
   faCircle,
   faCircleStop,
+  faFilePdf,
 } from "@fortawesome/free-solid-svg-icons";
 import {
   collection,
@@ -52,6 +53,7 @@ import ChatSidebar from "./chatsidebar/ChatSidebar";
 import CustomContextMenu from "./CustomContextMenu";
 import ContextToolbarComponent from "./ContextToolbarComponent";
 import { AudioShapeUtil } from "../shapes/AudioShapeUtil";
+import { PdfShapeUtil } from "../shapes/Pdfshapeutil";
 import { MicrophoneTool } from "../tools/MicrophoneTool";
 import CustomActionsMenu from "./CustomActionsMenu";
 import { upsertImageUrl } from "../utils/registershapes";
@@ -72,6 +74,8 @@ import { createNamedShapeUtils } from "./NamedShapeUtils";
 import { UserContext } from "./UserContext";
 import SessionSpeechCapture from "./whiteboard/SessionSpeechCapture";
 import CanvasPortal from "./canvashelpers/CanvasPortal";
+import PortalSuckOverlay from "./PortalSuckOverlay";
+import { restoreShapeMetadata } from "../utils/registershapes";
 
 import {
   resolveImageUrl,
@@ -462,8 +466,47 @@ const CollaborativeWhiteboard = () => {
 
   const [isDraggingSelection, setIsDraggingSelection] = useState(false);
   const [isPortalDropReady, setIsPortalDropReady] = useState(false);
+
   const pendingPublishShapesRef = useRef(null);
   const pointerScreenRef = useRef({ x: 0, y: 0 });
+  const dragGhostElRef = useRef(null);
+  const dragGhostImgUrlRef = useRef(null);
+  const dragGhostCaptureInFlightRef = useRef(false);
+  const dragGhostShapeIdsRef = useRef([]);
+  const wasDraggingRef = useRef(false);
+
+  const PORTAL_PULL_RADIUS = 260; // px — distance at which shrinking starts
+  const PORTAL_MIN_SCALE = 0.12; // smallest the ghost shrinks to at dead-center
+
+  const exportSelectionSvg = useCallback(async (editor, ids) => {
+    try {
+      const exportSvg = editor.getSvgString
+        ? (i, o) => editor.getSvgString(i, o).then((r) => r?.svg ?? null)
+        : editor.getSvg
+        ? (i, o) =>
+            editor
+              .getSvg(i, o)
+              .then((el) =>
+                el ? new XMLSerializer().serializeToString(el) : null
+              )
+        : null;
+      if (!exportSvg) return null;
+      return await exportSvg(ids, { background: false, padding: 8 });
+    } catch (err) {
+      console.error("[portal] drag-ghost snapshot failed:", err);
+      return null;
+    }
+  }, []);
+
+  const clearDimmedShapes = useCallback(() => {
+    dragGhostShapeIdsRef.current.forEach((id) => {
+      try {
+        const el = document.querySelector(`[data-shape-id="${id}"]`);
+        if (el) el.style.opacity = "";
+      } catch {}
+    });
+    dragGhostShapeIdsRef.current = [];
+  }, []);
 
   const portalDropReadyRef = useRef(false);
   useEffect(() => {
@@ -471,6 +514,18 @@ const CollaborativeWhiteboard = () => {
   }, [isPortalDropReady]);
 
   const panelCollapsedRef = useRef(isPanelCollapsed);
+
+  const [portalSuckEffect, setPortalSuckEffect] = useState(null);
+
+  const [portalArrivalPulse, setPortalArrivalPulse] = useState(null);
+
+  const handleSuckAnimationDone = useCallback(() => {
+    setPortalArrivalPulse(Date.now());
+    setPortalSuckEffect((prev) => {
+      if (prev?.imgUrl) URL.revokeObjectURL(prev.imgUrl);
+      return null;
+    });
+  }, []);
 
   useEffect(() => {
     console.log("[Canvas] editorReady changed:", editorReady);
@@ -539,6 +594,7 @@ const CollaborativeWhiteboard = () => {
       NamedText,
       NamedImage,
       AudioShapeUtil,
+      PdfShapeUtil,
     ];
   }, []);
 
@@ -806,24 +862,84 @@ const CollaborativeWhiteboard = () => {
   );
 
   const publishShapesToPublic = useCallback(
-    (shapeIds) => {
+    async (shapeIds) => {
       const editor = editorInstance.current;
       if (!editor || !shapeIds?.length) return;
       if (canvasMode !== "private") return;
 
-      const shapes = shapeIds.map((id) => editor.getShape(id)).filter(Boolean);
+      console.log("[portal] publishShapesToPublic called", { shapeIds });
 
+      const shapes = shapeIds.map((id) => editor.getShape(id)).filter(Boolean);
       if (!shapes.length) return;
 
-      const bounds = editor.getViewportPageBounds();
-      const baseX = (bounds.minX + bounds.maxX) / 2;
-      const baseY = (bounds.minY + bounds.maxY) / 2;
+      // Anchor point for relative layout: center of the whole selection in
+      // PAGE space on the private canvas. Every shape's offset from this
+      // center is preserved so a multi-shape selection keeps its layout
+      // when it reappears on the public canvas — recentered around wherever
+      // the public canvas's own viewport happens to be looking, computed
+      // later in onMount using the DESTINATION editor's viewport (using
+      // THIS editor's viewport was the earlier bug — it placed shapes
+      // based on the private canvas's camera, unrelated to where anyone
+      // is looking on the public side).
+      const selBoundsForLayout =
+        editor.getSelectionPageBounds?.() ?? editor.getSelectedPageBounds?.();
+      const groupCenterX = selBoundsForLayout
+        ? (selBoundsForLayout.minX + selBoundsForLayout.maxX) / 2
+        : shapes[0]?.x ?? 0;
+      const groupCenterY = selBoundsForLayout
+        ? (selBoundsForLayout.minY + selBoundsForLayout.maxY) / 2
+        : shapes[0]?.y ?? 0;
 
-      const preparedShapes = shapes.map((shape, index) => ({
+      // Snapshot each shape's CURRENT Firestore metadata before touching
+      // anything. If something else in the app deletes the Firestore doc
+      // in response to editor.deleteShapes() below (a generic "shape
+      // removed" listener elsewhere, not something this file controls),
+      // this is our only copy of createdBy/createdAt/comments/reactions —
+      // we'll write it back explicitly once the shape exists again on the
+      // public side, as the very last step, so it always wins.
+      const firestoreMetaByShapeId = {};
+      try {
+        await Promise.all(
+          shapeIds.map(async (id) => {
+            const ref = doc(
+              db,
+              "classrooms",
+              className,
+              "Projects",
+              projectName,
+              "teams",
+              teamName,
+              "shapes",
+              id
+            );
+            const snap = await getDoc(ref);
+            if (snap.exists()) {
+              const data = snap.data();
+              firestoreMetaByShapeId[id] = {
+                createdBy: data.createdBy,
+                createdAt: data.createdAt,
+                comments: data.comments,
+                reactions: data.reactions,
+              };
+            }
+          })
+        );
+      } catch (err) {
+        console.error(
+          "[portal] failed to snapshot Firestore metadata before publish:",
+          err
+        );
+      }
+
+      const preparedShapes = shapes.map((shape) => ({
         ...shape,
-        id: createShapeId(),
-        x: baseX + index * 24,
-        y: baseY + index * 24,
+        // Reusing the ORIGINAL id instead of minting a new one with
+        // createShapeId(). Private and public canvases are separate sync
+        // rooms with independent id namespaces, so this can't collide.
+        // Keeping the id means anything keyed by shapeId outside tldraw
+        // itself (e.g. a Firestore "shapes" collection) keeps pointing at
+        // the same key instead of silently switching ids on publish.
+        id: shape.id,
         meta: {
           ...(shape.meta || {}),
           publishedFromPrivate: true,
@@ -831,35 +947,158 @@ const CollaborativeWhiteboard = () => {
         },
       }));
 
-      pendingPublishShapesRef.current = preparedShapes;
+      // Snapshot the selection as an image + capture its on-screen rect
+      // BEFORE deleting anything, so the fly-into-the-portal clone is an
+      // exact match for what the user was just looking at.
+      let suckImgUrl = null;
+      let startRect = null;
+      try {
+        if (selBoundsForLayout) {
+          const p1 = editor.pageToScreen({
+            x: selBoundsForLayout.minX,
+            y: selBoundsForLayout.minY,
+          });
+          const p2 = editor.pageToScreen({
+            x: selBoundsForLayout.maxX,
+            y: selBoundsForLayout.maxY,
+          });
+          startRect = {
+            left: Math.min(p1.x, p2.x),
+            top: Math.min(p1.y, p2.y),
+            width: Math.max(4, Math.abs(p2.x - p1.x)),
+            height: Math.max(4, Math.abs(p2.y - p1.y)),
+          };
+        }
 
-      console.log("[portal] queued shapes for publish:", preparedShapes);
+        const exportSvg = editor.getSvgString
+          ? (ids, opts) =>
+              editor.getSvgString(ids, opts).then((r) => r?.svg ?? null)
+          : editor.getSvg
+          ? (ids, opts) =>
+              editor
+                .getSvg(ids, opts)
+                .then((el) =>
+                  el ? new XMLSerializer().serializeToString(el) : null
+                )
+          : null;
 
+        if (exportSvg) {
+          const svgString = await exportSvg(shapeIds, {
+            background: false,
+            padding: 8,
+          });
+          if (svgString) {
+            const blob = new Blob([svgString], { type: "image/svg+xml" });
+            suckImgUrl = URL.createObjectURL(blob);
+          }
+        } else {
+          console.error(
+            "[portal] no SVG export method found on editor — skipping fly-in animation"
+          );
+        }
+      } catch (err) {
+        console.error("[portal] snapshot for publish animation failed:", err);
+      }
+
+      console.log("[portal] captured snapshot for animation", {
+        hasImg: !!suckImgUrl,
+        startRect,
+      });
+
+      console.log("[portal] deleting from private, queuing for public", {
+        deletingIds: shapeIds,
+        queuedIds: preparedShapes.map((s) => s.id),
+        groupCenterX,
+        groupCenterY,
+      });
+
+      // Real shapes disappear now — the animation clone (same image) takes
+      // over visually at the exact same screen position, so there's no
+      // visible pop between "real shape" and "flying clone."
+      editor.deleteShapes(shapeIds);
+      pendingPublishShapesRef.current = {
+        shapes: preparedShapes,
+        groupCenterX,
+        groupCenterY,
+        firestoreMetaByShapeId,
+      };
       setCanvasMode("public");
+
+      if (suckImgUrl && startRect) {
+        const portalRect = getPortalRect();
+        if (portalRect) {
+          setPortalSuckEffect({
+            id: Date.now(),
+            imgUrl: suckImgUrl,
+            startRect,
+            target: {
+              x: portalRect.left + portalRect.width / 2,
+              y: portalRect.top + portalRect.height / 2,
+            },
+            duration: 480,
+          });
+        } else {
+          URL.revokeObjectURL(suckImgUrl);
+        }
+      }
     },
-    [canvasMode]
+    [canvasMode, getPortalRect]
   );
 
-  useEffect(() => {
-    if (!editorReady) return;
-    if (!isPublicMode) return;
+  // const publishShapesToPublic = useCallback(
+  //   async (shapeIds) => {
+  //     const editor = editorInstance.current;
+  //     if (!editor || !shapeIds?.length) return;
+  //     if (canvasMode !== "private") return;
 
-    const editor = editorInstance.current;
-    const queuedShapes = pendingPublishShapesRef.current;
+  //     console.log("[portal] publishShapesToPublic called", { shapeIds }); // NEW
 
-    if (!editor || !queuedShapes?.length) return;
+  //     const shapes = shapeIds.map((id) => editor.getShape(id)).filter(Boolean);
+  //     if (!shapes.length) return;
 
-    try {
-      editor.createShapes(queuedShapes);
-      console.log("[portal] published queued shapes into public canvas");
-      pendingPublishShapesRef.current = null;
-    } catch (err) {
-      console.error(
-        "[portal] failed to create queued shapes in public canvas:",
-        err
-      );
-    }
-  }, [editorReady, isPublicMode]);
+  //     // ... bounds / preparedShapes / snapshot capture unchanged ...
+
+  //     console.log("[portal] captured snapshot for animation", {
+  //       // NEW
+  //       hasImg: !!suckImgUrl,
+  //       startRect,
+  //     });
+
+  //     console.log("[portal] deleting from private, queuing for public", {
+  //       // NEW
+  //       deletingIds: shapeIds,
+  //       queuedIds: preparedShapes.map((s) => s.id),
+  //     });
+
+  //     editor.deleteShapes(shapeIds);
+  //     pendingPublishShapesRef.current = preparedShapes;
+  //     setCanvasMode("public");
+
+  //     // ... suck animation trigger unchanged ...
+  //   },
+  //   [canvasMode, getPortalRect]
+  // );
+
+  // useEffect(() => {
+  //   if (!editorReady) return;
+  //   if (!isPublicMode) return;
+
+  //   const editor = editorInstance.current;
+  //   const queuedShapes = pendingPublishShapesRef.current;
+
+  //   if (!editor || !queuedShapes?.length) return;
+
+  //   try {
+  //     editor.createShapes(queuedShapes);
+  //     console.log("[portal] published queued shapes into public canvas");
+  //     pendingPublishShapesRef.current = null;
+  //   } catch (err) {
+  //     console.error(
+  //       "[portal] failed to create queued shapes in public canvas:",
+  //       err
+  //     );
+  //   }
+  // }, [editorReady, isPublicMode]);
 
   useEffect(() => {
     const handlePointerMove = (e) => {
@@ -878,6 +1117,80 @@ const CollaborativeWhiteboard = () => {
     };
   }, []);
 
+  // useEffect(() => {
+  //   if (!editorReady) return;
+  //   if (canvasMode !== "private") {
+  //     setIsDraggingSelection(false);
+  //     setIsPortalDropReady(false);
+  //     return;
+  //   }
+
+  //   let rafId = 0;
+
+  //   const tick = () => {
+  //     const editor = editorInstance.current;
+
+  //     if (!editor) {
+  //       rafId = requestAnimationFrame(tick);
+  //       return;
+  //     }
+
+  //     const selectedIds = editor.getSelectedShapeIds?.() || [];
+  //     const isDragging = !!editor.inputs?.isDragging;
+
+  //     if (!selectedIds.length || !isDragging) {
+  //       setIsDraggingSelection((prev) => (prev ? false : prev));
+  //       setIsPortalDropReady((prev) => (prev ? false : prev));
+  //       rafId = requestAnimationFrame(tick);
+  //       return;
+  //     }
+
+  //     setIsDraggingSelection((prev) => (prev ? prev : true));
+
+  //     const { x, y } = pointerScreenRef.current || { x: 0, y: 0 };
+  //     const ready = isPointNearPortal(x, y);
+
+  //     console.log("[portal] drag check", {
+  //       pointer: pointerScreenRef.current,
+  //       ready,
+  //       selectedCount: selectedIds.length,
+  //       canvasMode,
+  //     });
+
+  //     setIsPortalDropReady((prev) => (prev === ready ? prev : ready));
+
+  //     rafId = requestAnimationFrame(tick);
+  //   };
+
+  //   const onPointerUp = () => {
+  //     const editor = editorInstance.current;
+  //     if (!editor) return;
+
+  //     const selectedIds = editor.getSelectedShapeIds() || [];
+
+  //     console.log("[portal] pointerup", {
+  //       // NEW
+  //       dropReady: portalDropReadyRef.current,
+  //       selectedIds,
+  //     });
+
+  //     if (portalDropReadyRef.current && selectedIds.length) {
+  //       publishShapesToPublic(selectedIds);
+  //     }
+
+  //     setIsDraggingSelection(false);
+  //     setIsPortalDropReady(false);
+  //   };
+
+  //   rafId = requestAnimationFrame(tick);
+  //   window.addEventListener("pointerup", onPointerUp);
+
+  //   return () => {
+  //     cancelAnimationFrame(rafId);
+  //     window.removeEventListener("pointerup", onPointerUp);
+  //   };
+  // }, [editorReady, canvasMode, isPointNearPortal, publishShapesToPublic]);
+
   useEffect(() => {
     if (!editorReady) return;
     if (canvasMode !== "private") {
@@ -887,6 +1200,12 @@ const CollaborativeWhiteboard = () => {
     }
 
     let rafId = 0;
+
+    const hideGhost = () => {
+      const el = dragGhostElRef.current;
+      if (el) el.style.opacity = "0";
+      clearDimmedShapes();
+    };
 
     const tick = () => {
       const editor = editorInstance.current;
@@ -902,6 +1221,16 @@ const CollaborativeWhiteboard = () => {
       if (!selectedIds.length || !isDragging) {
         setIsDraggingSelection((prev) => (prev ? false : prev));
         setIsPortalDropReady((prev) => (prev ? false : prev));
+
+        if (wasDraggingRef.current) {
+          hideGhost();
+          if (dragGhostImgUrlRef.current) {
+            URL.revokeObjectURL(dragGhostImgUrlRef.current);
+            dragGhostImgUrlRef.current = null;
+          }
+        }
+        wasDraggingRef.current = false;
+
         rafId = requestAnimationFrame(tick);
         return;
       }
@@ -910,15 +1239,95 @@ const CollaborativeWhiteboard = () => {
 
       const { x, y } = pointerScreenRef.current || { x: 0, y: 0 };
       const ready = isPointNearPortal(x, y);
-
-      console.log("[portal] drag check", {
-        pointer: pointerScreenRef.current,
-        ready,
-        selectedCount: selectedIds.length,
-        canvasMode,
-      });
-
       setIsPortalDropReady((prev) => (prev === ready ? prev : ready));
+
+      // --- continuous shrink-toward-portal ghost, purely visual ---
+      const justStartedDragging = !wasDraggingRef.current;
+      wasDraggingRef.current = true;
+
+      if (justStartedDragging && !dragGhostCaptureInFlightRef.current) {
+        dragGhostCaptureInFlightRef.current = true;
+        exportSelectionSvg(editor, selectedIds).then((svgString) => {
+          dragGhostCaptureInFlightRef.current = false;
+          if (!svgString) return;
+          const blob = new Blob([svgString], { type: "image/svg+xml" });
+          const url = URL.createObjectURL(blob);
+          if (dragGhostImgUrlRef.current) {
+            URL.revokeObjectURL(dragGhostImgUrlRef.current);
+          }
+          dragGhostImgUrlRef.current = url;
+          const el = dragGhostElRef.current;
+          if (el) el.src = url;
+        });
+      }
+
+      const selBounds =
+        editor.getSelectionPageBounds?.() ?? editor.getSelectedPageBounds?.();
+      const portalRect = getPortalRect();
+
+      if (selBounds && portalRect) {
+        const p1 = editor.pageToScreen({
+          x: selBounds.minX,
+          y: selBounds.minY,
+        });
+        const p2 = editor.pageToScreen({
+          x: selBounds.maxX,
+          y: selBounds.maxY,
+        });
+        const rect = {
+          left: Math.min(p1.x, p2.x),
+          top: Math.min(p1.y, p2.y),
+          width: Math.max(4, Math.abs(p2.x - p1.x)),
+          height: Math.max(4, Math.abs(p2.y - p1.y)),
+        };
+
+        const portalCenter = {
+          x: portalRect.left + portalRect.width / 2,
+          y: portalRect.top + portalRect.height / 2,
+        };
+        const shapeCenter = {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+        };
+        const dist = Math.hypot(
+          shapeCenter.x - portalCenter.x,
+          shapeCenter.y - portalCenter.y
+        );
+
+        const proximity = Math.max(
+          0,
+          Math.min(1, 1 - dist / PORTAL_PULL_RADIUS)
+        );
+        const scale = 1 - proximity * (1 - PORTAL_MIN_SCALE);
+
+        const el = dragGhostElRef.current;
+        if (el && dragGhostImgUrlRef.current) {
+          el.style.left = `${rect.left}px`;
+          el.style.top = `${rect.top}px`;
+          el.style.width = `${rect.width}px`;
+          el.style.height = `${rect.height}px`;
+          el.style.transformOrigin = "center center";
+          el.style.transform = `scale(${scale})`;
+          el.style.opacity = String(proximity);
+        }
+
+        // Best-effort: dim the real shape(s) as the ghost takes over
+        // visually, so you don't see two overlapping copies. Depends on
+        // tldraw exposing data-shape-id on its rendered DOM node — if a
+        // future tldraw version changes that, this just silently no-ops
+        // (you'd see both layers, a harmless visual downgrade, not a bug).
+        const nextDimmed = [];
+        selectedIds.forEach((id) => {
+          try {
+            const shapeEl = document.querySelector(`[data-shape-id="${id}"]`);
+            if (shapeEl) {
+              shapeEl.style.opacity = String(1 - proximity * 0.9);
+              nextDimmed.push(id);
+            }
+          } catch {}
+        });
+        dragGhostShapeIdsRef.current = nextDimmed;
+      }
 
       rafId = requestAnimationFrame(tick);
     };
@@ -927,11 +1336,23 @@ const CollaborativeWhiteboard = () => {
       const editor = editorInstance.current;
       if (!editor) return;
 
-      const selectedIds = editor.getSelectedShapeIds?.() || [];
+      const selectedIds = editor.getSelectedShapeIds() || [];
+
+      console.log("[portal] pointerup", {
+        dropReady: portalDropReadyRef.current,
+        selectedIds,
+      });
 
       if (portalDropReadyRef.current && selectedIds.length) {
         publishShapesToPublic(selectedIds);
       }
+
+      hideGhost();
+      if (dragGhostImgUrlRef.current) {
+        URL.revokeObjectURL(dragGhostImgUrlRef.current);
+        dragGhostImgUrlRef.current = null;
+      }
+      wasDraggingRef.current = false;
 
       setIsDraggingSelection(false);
       setIsPortalDropReady(false);
@@ -943,8 +1364,17 @@ const CollaborativeWhiteboard = () => {
     return () => {
       cancelAnimationFrame(rafId);
       window.removeEventListener("pointerup", onPointerUp);
+      hideGhost();
     };
-  }, [editorReady, canvasMode, isPointNearPortal, publishShapesToPublic]);
+  }, [
+    editorReady,
+    canvasMode,
+    isPointNearPortal,
+    publishShapesToPublic,
+    exportSelectionSvg,
+    getPortalRect,
+    clearDimmedShapes,
+  ]);
 
   const nudgeHoverPrevSelectionRef = useRef(null);
 
@@ -1461,6 +1891,129 @@ const CollaborativeWhiteboard = () => {
       throw error;
     }
   }, []);
+
+  const uploadPdfToFirebase = useCallback(async (file) => {
+    const currentUser = auth.currentUser;
+    const uid = currentUser?.uid || "anon";
+    const timestamp = Date.now();
+    const safeName = file.name.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const filename = `pdfs/${uid}/${timestamp}-${safeName}`;
+
+    const pdfRef = ref(storage, filename);
+    await uploadBytes(pdfRef, file, {
+      contentType: "application/pdf",
+      customMetadata: {
+        uploadedBy: currentUser ? currentUser.uid : "anonymous",
+        uploadedAt: new Date(timestamp).toISOString(),
+      },
+    });
+
+    return await getDownloadURL(pdfRef);
+  }, []);
+
+  const pdfInputRef = useRef(null);
+
+  // Shared by both the toolbar button and drag-and-drop, so both paths
+  // stay in sync if the upload/creation logic ever changes.
+  // Re-enabled: the sync server's schema now recognizes the "pdf" shape
+  // type (deployed via the Cloudflare Quick Edit patch), confirmed by a
+  // clean room load with zero INVALID_RECORD errors.
+  const PDF_SHAPES_ENABLED = true;
+
+  const addPdfToCanvas = useCallback(
+    async (file, dropPoint) => {
+      if (!PDF_SHAPES_ENABLED) {
+        alert(
+          "PDF support is being finished up on our end — hang tight, this will be enabled shortly."
+        );
+        return;
+      }
+
+      const editor = editorInstance.current;
+      if (!editor) return;
+
+      if (file.type !== "application/pdf") {
+        alert("Only PDF files are supported right now.");
+        return;
+      }
+
+      const w = 420;
+      const h = 560;
+
+      try {
+        const url = await uploadPdfToFirebase(file);
+
+        let x, y;
+        if (dropPoint) {
+          x = dropPoint.x - w / 2;
+          y = dropPoint.y - h / 2;
+        } else {
+          const bounds = editor.getViewportPageBounds();
+          x = (bounds.minX + bounds.maxX) / 2 - w / 2;
+          y = (bounds.minY + bounds.maxY) / 2 - h / 2;
+        }
+
+        editor.createShape({
+          type: "pdf",
+          x,
+          y,
+          props: { w, h, src: url, title: file.name },
+        });
+      } catch (err) {
+        console.error("[PDF] failed to add PDF to canvas:", err);
+        alert("Couldn't add that PDF. Please try again.");
+      }
+    },
+    [uploadPdfToFirebase]
+  );
+
+  const handlePdfInputChange = useCallback(
+    (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = ""; // allow re-selecting the same file later
+      if (file) addPdfToCanvas(file);
+    },
+    [addPdfToCanvas]
+  );
+
+  // Drag-and-drop for PDFs specifically. We intercept in the capture
+  // phase and only preventDefault/stopPropagation when a PDF is actually
+  // present in the drag — everything else (images, etc.) falls through
+  // untouched to tldraw's own built-in drop handling.
+  useEffect(() => {
+    if (!editorReady) return;
+
+    const handleDragOver = (e) => {
+      const items = Array.from(e.dataTransfer?.items || []);
+      const hasPdf = items.some(
+        (item) => item.kind === "file" && item.type === "application/pdf"
+      );
+      if (hasPdf) e.preventDefault();
+    };
+
+    const handleDrop = (e) => {
+      const files = Array.from(e.dataTransfer?.files || []);
+      const pdfFile = files.find((f) => f.type === "application/pdf");
+      if (!pdfFile) return; // not our concern — let tldraw handle it
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const editor = editorInstance.current;
+      if (!editor) return;
+
+      const point = editor.screenToPage?.({ x: e.clientX, y: e.clientY });
+      addPdfToCanvas(pdfFile, point);
+    };
+
+    window.addEventListener("dragover", handleDragOver, true);
+    window.addEventListener("drop", handleDrop, true);
+
+    return () => {
+      window.removeEventListener("dragover", handleDragOver, true);
+      window.removeEventListener("drop", handleDrop, true);
+    };
+  }, [editorReady, addPdfToCanvas]);
 
   const startRecording = useCallback(async () => {
     recorderRef.current = await createToggleRecorder({
@@ -2055,6 +2608,15 @@ const CollaborativeWhiteboard = () => {
 
       return (
         <DefaultToolbar {...props}>
+          <button
+            type="button"
+            className="tlui-button tlui-button--icon"
+            title="Add PDF"
+            onClick={() => pdfInputRef.current?.click()}
+          >
+            <FontAwesomeIcon icon={faFilePdf} style={{ fontSize: 16 }} />
+          </button>
+
           <DefaultToolbarContent />
         </DefaultToolbar>
       );
@@ -2112,14 +2674,14 @@ const CollaborativeWhiteboard = () => {
 
   return (
     <>
-      <Navbar />
+      <Navbar isPublicCanvas={isPublicMode} />
       <div
         className={`main-container ${phaseClass} ${
           isPhasePulsing ? "phase-pulse" : ""
         }`}
         style={{ position: "fixed", inset: 0 }}
       >
-        <div
+        {/* <div
           style={{
             position: "fixed",
             top: 72,
@@ -2136,24 +2698,143 @@ const CollaborativeWhiteboard = () => {
           }}
         >
           Mode: {isPublicMode ? "Public" : "Private"}
-        </div>
+        </div> */}
+
+        <input
+          type="file"
+          accept="application/pdf"
+          ref={pdfInputRef}
+          onChange={handlePdfInputChange}
+          style={{ display: "none" }}
+        />
 
         <UserContext.Provider value={userCtxValue}>
           <Tldraw
             key={canvasMode}
+            // onMount={(editor) => {
+            //   console.log("[Canvas] Tldraw onMount fired", {
+            //     hasEditor: !!editor,
+            //     mode: canvasMode,
+
+            //     hasStore: !!editor?.store,
+            //     hasListen: !!editor?.store?.listen,
+            //   });
+            //   editorInstance.current = editor;
+            //   console.log("[Canvas] editorInstance.current set", {
+            //     hasEditorRef: !!editorInstance.current,
+            //   });
+            //   setEditorReady(true);
+            // }}
+            // store={isPublicMode ? store : privateStore}
             onMount={(editor) => {
               console.log("[Canvas] Tldraw onMount fired", {
-                hasEditor: !!editor,
                 mode: canvasMode,
+                isPublicMode,
+                roomId: isPublicMode ? roomId : privateRoomId,
+              });
 
-                hasStore: !!editor?.store,
-                hasListen: !!editor?.store?.listen,
-              });
               editorInstance.current = editor;
-              console.log("[Canvas] editorInstance.current set", {
-                hasEditorRef: !!editorInstance.current,
-              });
               setEditorReady(true);
+
+              const queued = pendingPublishShapesRef.current;
+
+              console.log("[portal] onMount publish check", {
+                isPublicMode,
+                queuedCount: queued?.shapes?.length || 0,
+                queuedIds: queued?.shapes?.map((s) => s.id) || [],
+              });
+
+              if (isPublicMode && queued?.shapes?.length) {
+                const targetPageId = editor.getCurrentPageId?.();
+
+                // Anchor the group to THIS editor's own current viewport —
+                // wherever the person is actually looking on the public
+                // canvas right now — instead of the private canvas's
+                // viewport (the earlier bug), while preserving each
+                // shape's original offset from the group's center so
+                // multi-shape selections keep their relative layout.
+                const destBounds = editor.getViewportPageBounds();
+                const destCenterX = (destBounds.minX + destBounds.maxX) / 2;
+                const destCenterY = (destBounds.minY + destBounds.maxY) / 2;
+
+                const shapesToCreate = queued.shapes.map((s, index) => ({
+                  ...s,
+                  parentId: targetPageId || s.parentId,
+                  x: destCenterX + (s.x - queued.groupCenterX) + index * 4,
+                  y: destCenterY + (s.y - queued.groupCenterY) + index * 4,
+                }));
+
+                console.log("[portal] creating shapes on public canvas", {
+                  targetPageId,
+                  destCenterX,
+                  destCenterY,
+                  shapes: shapesToCreate,
+                });
+
+                // ------/
+                try {
+                  editor.createShapes(shapesToCreate);
+                  console.log(
+                    "[portal] SUCCESS — created",
+                    shapesToCreate.length,
+                    "shape(s) on public canvas"
+                  );
+                  pendingPublishShapesRef.current = null;
+
+                  // Last-writer-wins repair pass: whatever Firestore state
+                  // exists right now for these shapes (possibly wiped by
+                  // an unrelated delete-on-removal listener, possibly
+                  // fine), overwrite it with the metadata we captured
+                  // before the publish started, tagged as now living in
+                  // the public space. This runs after both the delete and
+                  // the recreate, so it's the final word regardless of
+                  // how those two resolved relative to each other.
+                  if (queued.firestoreMetaByShapeId) {
+                    const restoreUserContext = {
+                      className,
+                      projectName,
+                      teamName,
+                      userId: currentUserId,
+                    };
+                    Object.entries(queued.firestoreMetaByShapeId).forEach(
+                      ([shapeId, meta]) => {
+                        restoreShapeMetadata(shapeId, restoreUserContext, {
+                          ...meta,
+                          space: "public",
+                        }).catch((err) =>
+                          console.error(
+                            "[portal] failed to restore Firestore metadata for",
+                            shapeId,
+                            err
+                          )
+                        );
+                      }
+                    );
+                  }
+                } catch (err) {
+                  console.error(
+                    "[portal] FAILED to create queued shapes on public canvas:",
+                    err
+                  );
+                }
+                // ------
+
+                // try {
+                //   editor.createShapes(shapesToCreate);
+
+                //   console.log(
+                //     "[portal] SUCCESS — created",
+                //     shapesToCreate.length,
+                //     "shape(s) on public canvas"
+                //   );
+                //   pendingPublishShapesRef.current = null;
+                // } catch (err) {
+                //   console.error(
+                //     "[portal] FAILED to create queued shapes on public canvas:",
+                //     err
+                //   );
+                // }
+              }
             }}
             store={isPublicMode ? store : privateStore}
             tools={toolsMemo}
@@ -2171,15 +2852,37 @@ const CollaborativeWhiteboard = () => {
           otherStore={isPublicMode ? privateStore : store}
           shapeUtils={shapeUtilsMemo}
           bindingUtils={BINDING_UTILS}
+          arrivalPulse={portalArrivalPulse}
         />
 
-        {isPublicMode && (
+        <PortalSuckOverlay
+          effect={portalSuckEffect}
+          onDone={handleSuckAnimationDone}
+        />
+
+        <img
+          ref={dragGhostElRef}
+          alt=""
+          style={{
+            position: "fixed",
+            left: 0,
+            top: 0,
+            width: 0,
+            height: 0,
+            opacity: 0,
+            pointerEvents: "none",
+            zIndex: 10125,
+            borderRadius: 6,
+          }}
+        />
+
+        {/* {isPublicMode && (
           <SessionSpeechCapture
             className={className}
             projectName={projectName}
             teamName={teamName}
           />
-        )}
+        )} */}
 
         <RobotDock
           src={robotSrc}

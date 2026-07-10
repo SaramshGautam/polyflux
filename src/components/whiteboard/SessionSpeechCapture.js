@@ -1,11 +1,16 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
-// import { db, auth } from "../../firebaseConfig";
 import { db, auth } from "../../firebaseConfig";
+import "../navbar/Navbar.css";
 
 const SpeechRecognition =
   window.SpeechRecognition || window.webkitSpeechRecognition;
 
+/**
+ * Compact mic toggle meant to live inline inside the Navbar (navbar-right).
+ * Click the mic to start/stop capture; a small popover under it shows
+ * live status / interim text while listening.
+ */
 export default function SessionSpeechCapture({
   className,
   projectName,
@@ -14,10 +19,12 @@ export default function SessionSpeechCapture({
   const [isListening, setIsListening] = useState(false);
   const [supported, setSupported] = useState(!!SpeechRecognition);
   const [liveText, setLiveText] = useState("");
+  const [showPanel, setShowPanel] = useState(false);
 
   const recognitionRef = useRef(null);
   const shouldKeepListeningRef = useRef(false);
   const sessionStartedAtRef = useRef(null);
+  const wrapperRef = useRef(null);
 
   const writeSpeechEvent = useCallback(
     async ({ text, startedAt, endedAt, isFinal = true }) => {
@@ -154,6 +161,16 @@ export default function SessionSpeechCapture({
     }
   }, []);
 
+  const handleToggle = useCallback(() => {
+    if (isListening) {
+      stopListening();
+    } else {
+      startListening();
+    }
+    setShowPanel(true);
+  }, [isListening, startListening, stopListening]);
+
+  // Stop recognition on unmount
   useEffect(() => {
     return () => {
       shouldKeepListeningRef.current = false;
@@ -163,102 +180,76 @@ export default function SessionSpeechCapture({
     };
   }, []);
 
+  // Close the status popover when clicking outside of it
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target)) {
+        setShowPanel(false);
+      }
+    };
+    document.addEventListener("click", handleClickOutside);
+    return () => document.removeEventListener("click", handleClickOutside);
+  }, []);
+
   if (!supported) {
     return (
       <div
-        style={{
-          position: "fixed",
-          top: 72,
-          right: 20,
-          zIndex: 10095,
-          background: "#fff3cd",
-          color: "#664d03",
-          border: "1px solid #ffecb5",
-          borderRadius: 8,
-          padding: "8px 12px",
-          fontSize: 13,
-        }}
+        className="navbar-mic"
+        title="Conversation capture isn't supported in this browser"
       >
-        Speech capture not supported in this browser.
+        <div
+          className="navbar-mic-btn"
+          style={{ opacity: 0.5, cursor: "default" }}
+        >
+          <i className="bi bi-mic-mute" />
+        </div>
       </div>
     );
   }
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        top: 72,
-        right: 20,
-        zIndex: 10095,
-        background: "white",
-        border: "1px solid #ddd",
-        borderRadius: 10,
-        padding: "10px 12px",
-        boxShadow: "0 6px 18px rgba(0,0,0,0.12)",
-        minWidth: 220,
-      }}
-    >
-      <div
-        style={{
-          fontSize: 13,
-          fontWeight: 700,
-          marginBottom: 8,
-        }}
+    <div className="navbar-mic" ref={wrapperRef}>
+      <button
+        type="button"
+        className={`navbar-mic-btn ${isListening ? "is-listening" : ""}`}
+        onClick={handleToggle}
+        title={
+          isListening
+            ? "Stop conversation capture"
+            : "Start conversation capture"
+        }
+        aria-label={
+          isListening
+            ? "Stop conversation capture"
+            : "Start conversation capture"
+        }
+        aria-pressed={isListening}
       >
-        Conversation Capture
-      </div>
+        <i className={`bi ${isListening ? "bi-mic-fill" : "bi-mic"}`} />
+        {isListening && <span className="navbar-mic-dot" />}
+      </button>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-        {!isListening ? (
-          <button
-            type="button"
-            onClick={startListening}
-            style={{
-              border: "none",
-              borderRadius: 8,
-              padding: "8px 10px",
-              background: "#198754",
-              color: "white",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            Start Listening
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={stopListening}
-            style={{
-              border: "none",
-              borderRadius: 8,
-              padding: "8px 10px",
-              background: "#dc3545",
-              color: "white",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            Stop Listening
-          </button>
-        )}
-      </div>
-
-      <div
-        style={{
-          fontSize: 12,
-          color: "#666",
-          minHeight: 18,
-          lineHeight: 1.4,
-        }}
-      >
-        {isListening
-          ? liveText
-            ? `Hearing: ${liveText}`
-            : "Listening..."
-          : "Not listening"}
-      </div>
+      {showPanel && (
+        <div className="navbar-mic-panel">
+          <div className="navbar-mic-panel-title">
+            <i
+              className={`bi ${
+                isListening
+                  ? "bi-record-circle is-live"
+                  : "bi-mic-mute is-muted"
+              }`}
+            />
+            Conversation Capture
+          </div>
+          <div className="navbar-mic-status">
+            {isListening
+              ? liveText
+                ? `Hearing: ${liveText}`
+                : "Listening…"
+              : "Not listening"}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
