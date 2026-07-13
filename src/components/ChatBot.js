@@ -17,6 +17,8 @@ import {
   faPlusCircle,
   faClockRotateLeft,
   faBolt,
+  faChevronDown,
+  faBars,
 } from "@fortawesome/free-solid-svg-icons";
 
 function linkifyText(text) {
@@ -465,6 +467,12 @@ const ChatBot = ({
   };
 
   const nudgeScrollRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    if (!messagesEndRef.current) return;
+    messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, loading, isOpen]);
 
   const getPhaseTheme = (phase) => {
     if (!phase) return "neutral";
@@ -1082,6 +1090,27 @@ const ChatBot = ({
 
       const confidenceHigh = meanConf === null ? false : meanConf >= 0.7;
 
+      // Prefer backend-provided nudge always — computed early because the
+      // logging call right below (and the button-mode gate after it) both
+      // need to read `chips`/`nudgeText`/`nudgeType`.
+      const backendNudge = data.nudge || null;
+
+      let nudgeText =
+        backendNudge?.text ||
+        trigger?.user_text ||
+        "I analyzed your recent activity. If you'd like, I can suggest a helpful next step.";
+
+      let chips =
+        Array.isArray(backendNudge?.chips) && backendNudge.chips.length
+          ? backendNudge.chips
+          : Array.isArray(trigger?.chips) && trigger.chips.length
+          ? trigger.chips
+          : [];
+
+      let nudgeType = String(
+        backendNudge?.role || trigger?.role || "nudge"
+      ).toLowerCase();
+
       // For auto mode: if not stable or not confident, silently skip
       if (source === "auto" && (!stablePhase || !confidenceHigh)) {
         console.log(
@@ -1134,25 +1163,6 @@ const ChatBot = ({
       const phaseThemeValue = getPhaseTheme(phase);
       // setPhaseTheme(phaseThemeValue);
       setShellThemeTemporarily(phaseThemeValue, 30_000);
-
-      // Prefer backend-provided nudge always
-      const backendNudge = data.nudge || null;
-
-      let nudgeText =
-        backendNudge?.text ||
-        trigger?.user_text ||
-        "I analyzed your recent activity. If you'd like, I can suggest a helpful next step.";
-
-      let chips =
-        Array.isArray(backendNudge?.chips) && backendNudge.chips.length
-          ? backendNudge.chips
-          : Array.isArray(trigger?.chips) && trigger.chips.length
-          ? trigger.chips
-          : [];
-
-      let nudgeType = String(
-        backendNudge?.role || trigger?.role || "nudge"
-      ).toLowerCase();
 
       // 🔗 let parent know which shapes were in the tail windows
       if (typeof onNudgeComputed === "function") {
@@ -1294,7 +1304,8 @@ const ChatBot = ({
 
   const toggleNudgeExpand = async (idx) => {
     const msg = messages?.[idx];
-    const nextExpanded = !msg?.expanded;
+    const currentlyExpanded = msg?.expanded !== false;
+    const nextExpanded = !currentlyExpanded;
 
     await logBotEvent("nudge_toggle", {
       expanded: nextExpanded,
@@ -1311,7 +1322,7 @@ const ChatBot = ({
     });
 
     setMessages((prev) =>
-      prev.map((m, i) => (i === idx ? { ...m, expanded: !m.expanded } : m))
+      prev.map((m, i) => (i === idx ? { ...m, expanded: nextExpanded } : m))
     );
   };
 
@@ -1345,12 +1356,31 @@ const ChatBot = ({
     setLoading(true);
 
     try {
+      // Backend now requires a real Firebase ID token (see /api/chatgpt-helper
+      // server-side changes) instead of trusting a client-supplied user_id.
+      const auth = getAuth();
+      const idToken = await auth.currentUser?.getIdToken();
+
+      if (!idToken) {
+        setMessages([
+          ...newMessages,
+          {
+            sender: "bot",
+            text: "You need to be signed in to chat with the AI.",
+          },
+        ]);
+        return;
+      }
+
       // const response = await fetch("http://127.0.0.1:5000/api/chatgpt-helper", {
       const response = await fetch(
         "https://flask-app-jqwkqdscaq-uc.a.run.app/api/chatgpt-helper",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
           body: JSON.stringify({
             message: userInput,
             canvas_id: canvasId,
@@ -1368,6 +1398,18 @@ const ChatBot = ({
       );
 
       const data = await response.json();
+
+      if (!response.ok) {
+        const errMsg =
+          response.status === 401
+            ? "You need to be signed in to chat with the AI."
+            : response.status === 429
+            ? "You're sending messages a bit too quickly — please wait a moment and try again."
+            : data?.error || "Something went wrong.";
+
+        setMessages([...newMessages, { sender: "bot", text: errMsg }]);
+        return;
+      }
 
       await logBotEvent("bot_reply", {
         replyPreview: redactText(data.reply, 1000),
@@ -1880,7 +1922,7 @@ const ChatBot = ({
                 onClick={() => toggleSidebar?.()}
                 title="Open chat history"
               >
-                <FontAwesomeIcon icon={faClockRotateLeft} />
+                <FontAwesomeIcon icon={faBars} />
               </button>
             )}
 
@@ -1955,8 +1997,14 @@ const ChatBot = ({
             //     msg.type
             //   );
 
-            const isExpanded = !isNudgeLike || msg.expanded;
+            const isExpanded = !isNudgeLike || msg.expanded !== false;
             const lines = toLines(msg.text);
+            const hasVisibleBody =
+              lines.some((l) => String(l ?? "").trim()) ||
+              (Array.isArray(msg.chips) && msg.chips.length > 0) ||
+              (Array.isArray(msg.image_urls) && msg.image_urls.length > 0) ||
+              (Array.isArray(msg.attached_texts) &&
+                msg.attached_texts.length > 0);
             const preview =
               lines.length > 0
                 ? lines[0].length > 120
@@ -2000,22 +2048,10 @@ const ChatBot = ({
                     onMouseLeave={() => handleNudgeHover(false)}
                   >
                     <div className="chatbot-nudge-header-left">
-                      {/* <span className="chatbot-nudge-pill">
-                        AI nudge{" "}
-                        {msg.meta?.triggerId ? `· ${msg.meta.triggerId}` : ""}
-                        Predicted Phase:{" "}
-                        {msg.meta?.phase ? `${msg.meta.phase}` : ""}
-                      </span> */}
-                      {/* {preview && (
-                        <span className="chatbot-nudge-preview">{preview}</span>
-                      )} */}
-                      {/* <span className="chatbot-nudge-pill">
-                        {getNudgeHeader({
-                          phase: msg.meta?.phase,
-                          triggerId: msg.meta?.triggerId,
-                          triggerLabel: msg.meta?.triggerLabel,
-                        })}
-                      </span> */}
+                      <span
+                        className={`chatbot-nudge-dot chatbot-nudge-dot-${msgTheme}`}
+                        aria-hidden="true"
+                      />
                       <span className="chatbot-nudge-pill">
                         {msg.meta?.headerText ||
                           getNudgeHeader({
@@ -2025,15 +2061,25 @@ const ChatBot = ({
                           })}
                       </span>
                     </div>
-                    <div className="chatbot-nudge-toggle">
-                      {isExpanded ? "Hide" : "Show"}
+                    <div
+                      className={`chatbot-nudge-toggle${
+                        isExpanded ? " is-open" : ""
+                      }`}
+                    >
+                      <FontAwesomeIcon icon={faChevronDown} />
                     </div>
                   </div>
                 )}
 
                 {/* Only show full body when expanded (or if not a nudge) */}
                 {isExpanded && (
-                  <>
+                  <div
+                    className={`chatbot-message-reveal${
+                      isNudgeLike && !hasVisibleBody
+                        ? " chatbot-message-reveal--empty"
+                        : ""
+                    }`}
+                  >
                     {msg.sender === "bot" && (
                       <button
                         className="chatbot-copy-btn"
@@ -2139,15 +2185,22 @@ const ChatBot = ({
                           ))}
                         </div>
                       )}
-                  </>
+                  </div>
                 )}
               </div>
             );
           })}
 
           {loading && (
-            <div className="chatbot-message bot">Working on it...</div>
+            <div className="chatbot-message bot">
+              <span className="chatbot-typing">
+                <span></span>
+                <span></span>
+                <span></span>
+              </span>
+            </div>
           )}
+          <div ref={messagesEndRef} />
         </div>
 
         <div className="chatbot-clipnote-bar">

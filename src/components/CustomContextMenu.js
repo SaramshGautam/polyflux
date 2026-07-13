@@ -19,6 +19,7 @@ import {
   startEditSession,
   scheduleUpdateShape,
   endEditSession,
+  ensureImageInStorageAndGetUrl,
 } from "../utils/registershapes";
 
 import { useParams } from "react-router-dom";
@@ -140,11 +141,12 @@ export default function CustomContextMenu({
     //   return;
     // }
 
-    const entry = makeHistoryEntry({
+    const entry = await makeHistoryEntry({
       userId: actorId,
       verb: "updated",
       shape,
       editor,
+      userContext,
     });
     // setActionHistory((prev) => [entry, ...prev]);
 
@@ -185,19 +187,44 @@ export default function CustomContextMenu({
     );
   }
 
-  function extractImageUrl(editor, shape) {
+  // function extractImageUrl(editor, shape) {
+  //   const assetId = shape?.props?.assetId;
+  //   if (!assetId) return "";
+  //   const asset = editor.getAsset(assetId);
+  //   // tldraw assets typically keep src under props.src
+  //   return asset?.props?.src || "";
+  // }
+
+  async function extractImageUrl(editor, shape, userContext) {
     const assetId = shape?.props?.assetId;
     if (!assetId) return "";
+
     const asset = editor.getAsset(assetId);
-    // tldraw assets typically keep src under props.src
-    return asset?.props?.src || "";
+    const src = asset?.props?.src || "";
+    if (!src) return "";
+
+    // Already a hosted URL — safe to use as-is
+    if (/^https?:\/\//i.test(src)) return src;
+
+    // Raw base64 or blob — must upload before it's safe for Firestore
+    if (/^data:image\//i.test(src) || /^blob:/i.test(src)) {
+      const hostedUrl = await ensureImageInStorageAndGetUrl({
+        userContext,
+        shapeId: shape.id,
+        props: { src },
+      });
+      return hostedUrl || ""; // never return the raw base64 as fallback
+    }
+
+    return "";
   }
 
-  function makeHistoryEntry({
+  async function makeHistoryEntry({
     userId,
     verb, // 'added' | 'updated' | 'deleted'
     shape,
     editor,
+    userContext,
   }) {
     const shapeType = shape?.type ?? "shape";
     const text =
@@ -205,7 +232,9 @@ export default function CustomContextMenu({
         ? extractShapeText(shape)
         : "";
     const imageUrl =
-      shapeType === "image" ? extractImageUrl(editor, shape) : "";
+      shapeType === "image"
+        ? await extractImageUrl(editor, shape, userContext)
+        : "";
     return {
       userId: userId || "anon",
       verb,
@@ -306,11 +335,12 @@ export default function CustomContextMenu({
         );
       }
 
-      const entry = makeHistoryEntry({
+      const entry = await makeHistoryEntry({
         userId: actorId,
         verb: "added",
         shape: newShape,
         editor,
+        userContext,
       });
       // setActionHistory((prev) => [entry, ...prev]);
 

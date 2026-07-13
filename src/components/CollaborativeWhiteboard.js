@@ -2736,6 +2736,142 @@ const CollaborativeWhiteboard = () => {
               editorInstance.current = editor;
               setEditorReady(true);
 
+              editor.registerExternalContentHandler(
+                "url",
+                async ({ point, url }) => {
+                  const createBookmarkFallback = (bookmarkUrl) => {
+                    // Bookmarks require a real http(s) URL — never pass a data:/blob: URI here
+                    if (!/^https?:\/\//i.test(bookmarkUrl)) return;
+                    const shapeId = createShapeId();
+                    editor.createShape({
+                      id: shapeId,
+                      type: "bookmark",
+                      x: point.x - 150,
+                      y: point.y - 100,
+                      props: { url: bookmarkUrl, w: 300, h: 200 },
+                    });
+                  };
+
+                  const uploadAndCreateImageShape = async (blob, ext) => {
+                    const currentUser = auth.currentUser;
+                    if (!currentUser) throw new Error("Not signed in");
+                    const uid = currentUser.uid;
+
+                    const ts = Date.now();
+                    const path = `dropped/${className}_${projectName}_${teamName}/${uid}/${ts}.${ext}`;
+                    const storageRef = ref(storage, path);
+                    await uploadBytes(storageRef, blob, {
+                      contentType: blob.type || `image/${ext}`,
+                    });
+                    const downloadUrl = await getDownloadURL(storageRef);
+
+                    const dims = await new Promise((resolve) => {
+                      const img = new Image();
+                      img.onload = () =>
+                        resolve({
+                          w: img.naturalWidth || 300,
+                          h: img.naturalHeight || 300,
+                        });
+                      img.onerror = () => resolve({ w: 300, h: 300 });
+                      img.src = downloadUrl;
+                    });
+
+                    const assetId = `asset:${Date.now()}-${Math.random()
+                      .toString(16)
+                      .slice(2)}`;
+                    editor.createAssets([
+                      {
+                        id: assetId,
+                        type: "image",
+                        typeName: "asset",
+                        props: {
+                          name: `dropped-${ts}.${ext}`,
+                          src: downloadUrl,
+                          w: dims.w,
+                          h: dims.h,
+                          mimeType: blob.type || `image/${ext}`,
+                          isAnimated: false,
+                        },
+                        meta: {},
+                      },
+                    ]);
+
+                    const shapeId = createShapeId();
+                    editor.createShape({
+                      id: shapeId,
+                      type: "image",
+                      x: point.x - dims.w / 4,
+                      y: point.y - dims.h / 4,
+                      props: { assetId, w: dims.w / 2, h: dims.h / 2 },
+                    });
+                  };
+
+                  // --- CASE 1: raw data:/blob: URI (pasted clipboard image) ---
+                  if (/^data:image\//i.test(url) || /^blob:/i.test(url)) {
+                    try {
+                      const res = await fetch(url);
+                      const blob = await res.blob();
+                      const ext = (blob.type.split("/")[1] || "png").replace(
+                        "jpeg",
+                        "jpg"
+                      );
+                      await uploadAndCreateImageShape(blob, ext);
+                    } catch (err) {
+                      console.error(
+                        "[paste-image] Failed to upload pasted image:",
+                        err
+                      );
+                      // No safe fallback for a raw data URI — nothing to bookmark
+                    }
+                    return;
+                  }
+
+                  // --- CASE 2: unwrap Google Images' redirect wrapper ---
+                  let resolvedUrl = url;
+                  try {
+                    const parsed = new URL(url);
+                    if (
+                      parsed.hostname.includes("google.") &&
+                      parsed.pathname === "/imgres"
+                    ) {
+                      const real = parsed.searchParams.get("imgurl");
+                      if (real) resolvedUrl = decodeURIComponent(real);
+                    }
+                  } catch {}
+
+                  const looksLikeImage =
+                    /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(resolvedUrl);
+
+                  // --- CASE 3: non-image URL → bookmark ---
+                  if (!looksLikeImage) {
+                    createBookmarkFallback(url);
+                    return;
+                  }
+
+                  // --- CASE 4: image URL (drag-and-drop) → proxy, upload, create image shape ---
+                  try {
+                    const proxied =
+                      "https://flask-app-jqwkqdscaq-uc.a.run.app/proxy-image?url=" +
+                      encodeURIComponent(resolvedUrl);
+                    const res = await fetch(proxied);
+                    if (!res.ok)
+                      throw new Error(`Proxy fetch failed: ${res.status}`);
+                    const blob = await res.blob();
+                    const ext = (blob.type.split("/")[1] || "png").replace(
+                      "jpeg",
+                      "jpg"
+                    );
+                    await uploadAndCreateImageShape(blob, ext);
+                  } catch (err) {
+                    console.error(
+                      "[drop-image] Failed to resolve image, falling back to bookmark:",
+                      err
+                    );
+                    createBookmarkFallback(url);
+                  }
+                }
+              );
+
               const queued = pendingPublishShapesRef.current;
 
               console.log("[portal] onMount publish check", {

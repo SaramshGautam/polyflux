@@ -247,7 +247,7 @@ export default function ViewerPortal({
 
       <div style={{ position: "relative", flex: 1 }}>
         <Tldraw
-          store={viewStore} // ok to share, see Fix 3 if still flickers
+          store={viewStore}
           shapeUtils={shapeUtils}
           bindingUtils={bindingUtils}
           tools={tools}
