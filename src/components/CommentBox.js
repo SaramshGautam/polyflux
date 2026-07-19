@@ -117,13 +117,24 @@ export default function CommentBox({
         user
       );
 
-      await logAction(
-        { className, projectName, teamName },
-        "added a comment in",
-        user.displayName,
-        selectedShape.id,
-        selectedShape.type || "unknown"
-      );
+      // logAction takes a single options object — { className, projectName,
+      // teamName, actorId, actorUid, verb, shapeId, shapeType, textPreview,
+      // imageUrl } — not positional arguments. The previous positional call
+      // here meant everything past the first argument (verb, shapeId,
+      // shapeType) was silently discarded by JS's destructuring, which is
+      // why Firestore was rejecting the write with `verb` (and the doc ID
+      // built from it) coming through as undefined.
+      await logAction({
+        className,
+        projectName,
+        teamName,
+        actorId: user.displayName || user.uid || "anon",
+        actorUid: user.uid || null,
+        verb: "added a comment in",
+        shapeId: selectedShape.id,
+        shapeType: selectedShape.type || "unknown",
+        textPreview: commentText.trim(),
+      });
 
       fetchActionHistory?.({ className, projectName, teamName });
       setCommentText("");

@@ -8,6 +8,7 @@ import React, {
 import {
   Tldraw,
   DefaultToolbar,
+  DefaultStylePanel,
   TldrawUiMenuItem,
   useTools,
   useIsToolSelected,
@@ -51,6 +52,8 @@ import Navbar from "./navbar/Navbar";
 import ChatBot from "./ChatBot";
 import ChatSidebar from "./chatsidebar/ChatSidebar";
 import CustomContextMenu from "./CustomContextMenu";
+import HistoryCommentPanel from "./HistoryCommentPanel";
+import ToggleExpandButton from "./ToggleExpandButton";
 import ContextToolbarComponent from "./ContextToolbarComponent";
 import { AudioShapeUtil } from "../shapes/AudioShapeUtil";
 import { PdfShapeUtil } from "../shapes/Pdfshapeutil";
@@ -160,7 +163,7 @@ function useCameraPresence(
         { ...payloadObj, lastActive: serverTimestamp() },
         { merge: true }
       ).catch((e) => {
-        console.log("presence write failed", e);
+        console.error("[presence] write failed", e);
       });
     };
 
@@ -513,8 +516,6 @@ const CollaborativeWhiteboard = () => {
     portalDropReadyRef.current = isPortalDropReady;
   }, [isPortalDropReady]);
 
-  const panelCollapsedRef = useRef(isPanelCollapsed);
-
   const [portalSuckEffect, setPortalSuckEffect] = useState(null);
 
   const [portalArrivalPulse, setPortalArrivalPulse] = useState(null);
@@ -527,15 +528,16 @@ const CollaborativeWhiteboard = () => {
     });
   }, []);
 
-  useEffect(() => {
-    console.log("[Canvas] editorReady changed:", editorReady);
-  }, [editorReady]);
-
   const [selectionModeActive, setSelectionModeActive] = useState(false);
 
   const [phaseTailShapeIds, setPhaseTailShapeIds] = useState([]);
 
   const [nudgeFocusShapeId, setNudgeFocusShapeId] = useState(null);
+  // Tells ContextToolbarComponent (rendered inside tldraw's
+  // InFrontOfTheCanvas slot) to open its comment box for this shape once
+  // selection catches up to it — set from the Comments panel's click
+  // handler, cleared once consumed.
+  const [commentFocusShapeId, setCommentFocusShapeId] = useState(null);
   const [currentPhaseName, setCurrentPhaseName] = useState(null);
   const [currentPhaseDetail, setCurrentPhaseDetail] = useState(null);
   const [isPhasePulsing, setIsPhasePulsing] = useState(false);
@@ -650,7 +652,14 @@ const CollaborativeWhiteboard = () => {
       window.removeEventListener("resize", update);
       ro?.disconnect?.();
     };
-  }, [editorReady]);
+    // canvasMode is included here (not just editorReady) because
+    // <Tldraw key={canvasMode}> fully remounts on every switch, which
+    // destroys and recreates the [data-navpanel="true"] node. Without
+    // this, the ResizeObserver above keeps watching the old, now-detached
+    // node forever, robotPosition freezes at its last value, and the dock
+    // ends up pinned somewhere stale (looking like it vanished) instead
+    // of tracking the freshly mounted nav panel.
+  }, [editorReady, canvasMode]);
 
   const lastTriggerRef = useRef(null);
   const NUDGE_COOLDOWN_MS = 120_000;
@@ -681,7 +690,6 @@ const CollaborativeWhiteboard = () => {
         if (stampingRef.current) return;
 
         const actorId = actorIdRef.current;
-        console.log("actorId:", actorId);
 
         const added = entry?.changes?.added
           ? Object.values(entry.changes.added)
@@ -765,14 +773,7 @@ const CollaborativeWhiteboard = () => {
 
   const playTriggerAnimation = useCallback(
     (triggerId) => {
-      if (!triggerId) {
-        console.log(
-          "[RobotDock] playTriggerAnimation called with no triggerId"
-        );
-        return;
-      }
-
-      console.log("[RobotDock] Playing animation for trigger:", triggerId);
+      if (!triggerId) return;
 
       lastTriggerRef.current = triggerId;
 
@@ -841,7 +842,6 @@ const CollaborativeWhiteboard = () => {
 
   const getPortalRect = useCallback(() => {
     const el = document.querySelector('[data-canvas-portal="true"]');
-    console.log("[portal] found element:", !!el);
     return el ? el.getBoundingClientRect() : null;
   }, []);
 
@@ -861,26 +861,31 @@ const CollaborativeWhiteboard = () => {
     [getPortalRect]
   );
 
-  const publishShapesToPublic = useCallback(
+  // Works from either side of the portal: whichever canvas is currently
+  // mounted (canvasMode) is the source, and the other one is always the
+  // destination. Previously this was hardcoded private->public only; the
+  // only truly direction-specific pieces are the destination mode itself
+  // and a couple of metadata tags, both computed below.
+  const publishSelectionAcrossPortal = useCallback(
     async (shapeIds) => {
       const editor = editorInstance.current;
       if (!editor || !shapeIds?.length) return;
-      if (canvasMode !== "private") return;
 
-      console.log("[portal] publishShapesToPublic called", { shapeIds });
+      const sourceMode = canvasMode;
+      const destinationMode = sourceMode === "private" ? "public" : "private";
 
       const shapes = shapeIds.map((id) => editor.getShape(id)).filter(Boolean);
       if (!shapes.length) return;
 
       // Anchor point for relative layout: center of the whole selection in
-      // PAGE space on the private canvas. Every shape's offset from this
+      // PAGE space on the source canvas. Every shape's offset from this
       // center is preserved so a multi-shape selection keeps its layout
-      // when it reappears on the public canvas — recentered around wherever
-      // the public canvas's own viewport happens to be looking, computed
+      // when it reappears on the destination canvas — recentered around
+      // wherever that canvas's own viewport happens to be looking, computed
       // later in onMount using the DESTINATION editor's viewport (using
       // THIS editor's viewport was the earlier bug — it placed shapes
-      // based on the private canvas's camera, unrelated to where anyone
-      // is looking on the public side).
+      // based on the source canvas's camera, unrelated to where anyone
+      // is looking on the destination side).
       const selBoundsForLayout =
         editor.getSelectionPageBounds?.() ?? editor.getSelectedPageBounds?.();
       const groupCenterX = selBoundsForLayout
@@ -942,7 +947,8 @@ const CollaborativeWhiteboard = () => {
         id: shape.id,
         meta: {
           ...(shape.meta || {}),
-          publishedFromPrivate: true,
+          publishedFromPortal: true,
+          publishedFromMode: sourceMode,
           publishedAt: Date.now(),
         },
       }));
@@ -991,26 +997,10 @@ const CollaborativeWhiteboard = () => {
             const blob = new Blob([svgString], { type: "image/svg+xml" });
             suckImgUrl = URL.createObjectURL(blob);
           }
-        } else {
-          console.error(
-            "[portal] no SVG export method found on editor — skipping fly-in animation"
-          );
         }
       } catch (err) {
         console.error("[portal] snapshot for publish animation failed:", err);
       }
-
-      console.log("[portal] captured snapshot for animation", {
-        hasImg: !!suckImgUrl,
-        startRect,
-      });
-
-      console.log("[portal] deleting from private, queuing for public", {
-        deletingIds: shapeIds,
-        queuedIds: preparedShapes.map((s) => s.id),
-        groupCenterX,
-        groupCenterY,
-      });
 
       // Real shapes disappear now — the animation clone (same image) takes
       // over visually at the exact same screen position, so there's no
@@ -1021,8 +1011,9 @@ const CollaborativeWhiteboard = () => {
         groupCenterX,
         groupCenterY,
         firestoreMetaByShapeId,
+        destinationMode,
       };
-      setCanvasMode("public");
+      setCanvasMode(destinationMode);
 
       if (suckImgUrl && startRect) {
         const portalRect = getPortalRect();
@@ -1045,61 +1036,6 @@ const CollaborativeWhiteboard = () => {
     [canvasMode, getPortalRect]
   );
 
-  // const publishShapesToPublic = useCallback(
-  //   async (shapeIds) => {
-  //     const editor = editorInstance.current;
-  //     if (!editor || !shapeIds?.length) return;
-  //     if (canvasMode !== "private") return;
-
-  //     console.log("[portal] publishShapesToPublic called", { shapeIds }); // NEW
-
-  //     const shapes = shapeIds.map((id) => editor.getShape(id)).filter(Boolean);
-  //     if (!shapes.length) return;
-
-  //     // ... bounds / preparedShapes / snapshot capture unchanged ...
-
-  //     console.log("[portal] captured snapshot for animation", {
-  //       // NEW
-  //       hasImg: !!suckImgUrl,
-  //       startRect,
-  //     });
-
-  //     console.log("[portal] deleting from private, queuing for public", {
-  //       // NEW
-  //       deletingIds: shapeIds,
-  //       queuedIds: preparedShapes.map((s) => s.id),
-  //     });
-
-  //     editor.deleteShapes(shapeIds);
-  //     pendingPublishShapesRef.current = preparedShapes;
-  //     setCanvasMode("public");
-
-  //     // ... suck animation trigger unchanged ...
-  //   },
-  //   [canvasMode, getPortalRect]
-  // );
-
-  // useEffect(() => {
-  //   if (!editorReady) return;
-  //   if (!isPublicMode) return;
-
-  //   const editor = editorInstance.current;
-  //   const queuedShapes = pendingPublishShapesRef.current;
-
-  //   if (!editor || !queuedShapes?.length) return;
-
-  //   try {
-  //     editor.createShapes(queuedShapes);
-  //     console.log("[portal] published queued shapes into public canvas");
-  //     pendingPublishShapesRef.current = null;
-  //   } catch (err) {
-  //     console.error(
-  //       "[portal] failed to create queued shapes in public canvas:",
-  //       err
-  //     );
-  //   }
-  // }, [editorReady, isPublicMode]);
-
   useEffect(() => {
     const handlePointerMove = (e) => {
       pointerScreenRef.current = {
@@ -1117,87 +1053,12 @@ const CollaborativeWhiteboard = () => {
     };
   }, []);
 
-  // useEffect(() => {
-  //   if (!editorReady) return;
-  //   if (canvasMode !== "private") {
-  //     setIsDraggingSelection(false);
-  //     setIsPortalDropReady(false);
-  //     return;
-  //   }
-
-  //   let rafId = 0;
-
-  //   const tick = () => {
-  //     const editor = editorInstance.current;
-
-  //     if (!editor) {
-  //       rafId = requestAnimationFrame(tick);
-  //       return;
-  //     }
-
-  //     const selectedIds = editor.getSelectedShapeIds?.() || [];
-  //     const isDragging = !!editor.inputs?.isDragging;
-
-  //     if (!selectedIds.length || !isDragging) {
-  //       setIsDraggingSelection((prev) => (prev ? false : prev));
-  //       setIsPortalDropReady((prev) => (prev ? false : prev));
-  //       rafId = requestAnimationFrame(tick);
-  //       return;
-  //     }
-
-  //     setIsDraggingSelection((prev) => (prev ? prev : true));
-
-  //     const { x, y } = pointerScreenRef.current || { x: 0, y: 0 };
-  //     const ready = isPointNearPortal(x, y);
-
-  //     console.log("[portal] drag check", {
-  //       pointer: pointerScreenRef.current,
-  //       ready,
-  //       selectedCount: selectedIds.length,
-  //       canvasMode,
-  //     });
-
-  //     setIsPortalDropReady((prev) => (prev === ready ? prev : ready));
-
-  //     rafId = requestAnimationFrame(tick);
-  //   };
-
-  //   const onPointerUp = () => {
-  //     const editor = editorInstance.current;
-  //     if (!editor) return;
-
-  //     const selectedIds = editor.getSelectedShapeIds() || [];
-
-  //     console.log("[portal] pointerup", {
-  //       // NEW
-  //       dropReady: portalDropReadyRef.current,
-  //       selectedIds,
-  //     });
-
-  //     if (portalDropReadyRef.current && selectedIds.length) {
-  //       publishShapesToPublic(selectedIds);
-  //     }
-
-  //     setIsDraggingSelection(false);
-  //     setIsPortalDropReady(false);
-  //   };
-
-  //   rafId = requestAnimationFrame(tick);
-  //   window.addEventListener("pointerup", onPointerUp);
-
-  //   return () => {
-  //     cancelAnimationFrame(rafId);
-  //     window.removeEventListener("pointerup", onPointerUp);
-  //   };
-  // }, [editorReady, canvasMode, isPointNearPortal, publishShapesToPublic]);
-
   useEffect(() => {
     if (!editorReady) return;
-    if (canvasMode !== "private") {
-      setIsDraggingSelection(false);
-      setIsPortalDropReady(false);
-      return;
-    }
+    // Runs regardless of which canvas is active — dragging into the portal
+    // is symmetric now: private canvas targets public, public targets
+    // private. (Previously this bailed out entirely unless canvasMode was
+    // "private", which is why publish-by-drag only ever worked one way.)
 
     let rafId = 0;
 
@@ -1338,13 +1199,8 @@ const CollaborativeWhiteboard = () => {
 
       const selectedIds = editor.getSelectedShapeIds() || [];
 
-      console.log("[portal] pointerup", {
-        dropReady: portalDropReadyRef.current,
-        selectedIds,
-      });
-
       if (portalDropReadyRef.current && selectedIds.length) {
-        publishShapesToPublic(selectedIds);
+        publishSelectionAcrossPortal(selectedIds);
       }
 
       hideGhost();
@@ -1370,7 +1226,7 @@ const CollaborativeWhiteboard = () => {
     editorReady,
     canvasMode,
     isPointNearPortal,
-    publishShapesToPublic,
+    publishSelectionAcrossPortal,
     exportSelectionSvg,
     getPortalRect,
     clearDimmedShapes,
@@ -1384,8 +1240,17 @@ const CollaborativeWhiteboard = () => {
     nudges: [],
   });
 
+  // Action history only makes sense on the public/shared canvas — a
+  // private canvas's edits are personal to that user, so there's nothing
+  // meaningful to show, and no reason to pay for a live Firestore listener
+  // while on that side.
   const { actionHistory, setActionHistory, fetchActionHistory } =
-    useCanvasActionHistory({ className, projectName, teamName });
+    useCanvasActionHistory({
+      className,
+      projectName,
+      teamName,
+      enabled: isPublicMode,
+    });
 
   useCameraPresence(editorInstance, {
     className,
@@ -1467,7 +1332,6 @@ const CollaborativeWhiteboard = () => {
         }));
 
         setSpeechForAnalysis(speech);
-        console.log("[FS speech] for analysis:", speech);
       },
       (error) => {
         console.error("Error listening to speech_events:", error);
@@ -1510,7 +1374,7 @@ const CollaborativeWhiteboard = () => {
 
         setSessionActors(actors);
       },
-      (err) => console.log("[presence] listen error", err)
+      (err) => console.error("[presence] listen error", err)
     );
 
     return () => unsub();
@@ -1551,13 +1415,6 @@ const CollaborativeWhiteboard = () => {
         return ta - tb;
       });
   }, [speechForAnalysis]);
-
-  useEffect(() => {
-    console.log(
-      "[speech] Normalized speech for analysis:",
-      normalizedSpeechForAnalysis
-    );
-  }, [normalizedSpeechForAnalysis]);
 
   useEffect(() => {
     if (!className || !projectName || !teamName) return;
@@ -1644,7 +1501,6 @@ const CollaborativeWhiteboard = () => {
     const handler = (e) => {
       const { enabled } = e.detail || {};
       setSelectionModeActive(Boolean(enabled));
-      console.log("[Chatbot] selection mode:", enabled);
     };
 
     window.addEventListener("chatbot-selection-mode", handler);
@@ -1653,98 +1509,53 @@ const CollaborativeWhiteboard = () => {
 
   useEffect(() => {
     const handleNudgeHover = (e) => {
-      console.group("[Canvas] chatbot-nudge-hover event");
-      console.log("Raw event:", e);
-
       const detail = e.detail || {};
-      console.log("Event detail:", detail);
 
       const editor = editorInstance.current;
-      if (!editor) {
-        console.log("[Canvas] No editor instance yet");
-        console.groupEnd();
-        return;
-      }
+      if (!editor) return;
 
       const active = !!detail.active;
       const tailShapeIds = Array.isArray(detail.tailShapeIds)
         ? detail.tailShapeIds
         : [];
 
-      console.log("active:", active);
-      console.log("tailShapeIds (from event):", tailShapeIds);
-
       if (active && tailShapeIds.length) {
         if (!nudgeHoverPrevSelectionRef.current) {
           try {
             const currentSel = editor.getSelectedShapeIds();
-            console.log("[Canvas] Saving previous selection:", currentSel);
             nudgeHoverPrevSelectionRef.current = currentSel;
           } catch (err) {
-            console.log("[Canvas] Failed to read selected shape ids:", err);
             nudgeHoverPrevSelectionRef.current = [];
           }
         }
 
-        const validIds = tailShapeIds.filter((id) => {
-          const shape = editor.getShape(id);
-          const exists = !!shape;
-          if (!exists) {
-            console.log("[Canvas] Tail shape not found in editor:", id);
-          } else {
-            console.log("[Canvas] Tail shape exists:", id, shape);
-          }
-          return exists;
-        });
-
-        console.log("[Canvas] Valid tail ids to select:", validIds);
+        const validIds = tailShapeIds.filter((id) => !!editor.getShape(id));
 
         try {
           editor.setSelectedShapes(validIds);
-          console.log(
-            "[Canvas] Selection after hover:",
-            editor.getSelectedShapeIds()
-          );
-        } catch (err) {
-          console.log("[Canvas] Failed to set selection for nudge hover:", err);
-        }
+        } catch (err) {}
 
-        console.groupEnd();
         return;
       }
 
       const prev = nudgeHoverPrevSelectionRef.current;
-      console.log("[Canvas] Hover end. Previous selection to restore:", prev);
 
       if (prev && prev.length) {
         const validPrev = prev.filter((id) => !!editor.getShape(id));
-        console.log("[Canvas] Valid previous selection:", validPrev);
         try {
           editor.setSelectedShapes(validPrev);
-          console.log(
-            "[Canvas] Selection after restore:",
-            editor.getSelectedShapeIds()
-          );
-        } catch (err) {
-          console.log("[Canvas] Failed to restore previous selection:", err);
-        }
+        } catch (err) {}
       } else {
-        console.log("[Canvas] No previous selection, clearing selection");
         try {
           editor.setSelectedShapes([]);
-        } catch (err) {
-          console.log("[Canvas] Failed to clear selection on hover end:", err);
-        }
+        } catch (err) {}
       }
 
       nudgeHoverPrevSelectionRef.current = null;
-      console.groupEnd();
     };
 
-    console.log("[Canvas] Adding listener for 'chatbot-nudge-hover'");
     window.addEventListener("chatbot-nudge-hover", handleNudgeHover);
     return () => {
-      console.log("[Canvas] Removing listener for 'chatbot-nudge-hover'");
       window.removeEventListener("chatbot-nudge-hover", handleNudgeHover);
     };
   }, []);
@@ -1757,10 +1568,7 @@ const CollaborativeWhiteboard = () => {
     const handleRequestSelection = () => {
       const selection = makeSelectionSummary(editor);
 
-      if (!selection.ids || selection.ids.length === 0) {
-        console.log("[Chatbot] No shapes selected to add as clips");
-        return;
-      }
+      if (!selection.ids || selection.ids.length === 0) return;
 
       const payload = buildAiPayloadFromSelection(selection, editor);
 
@@ -1788,7 +1596,6 @@ const CollaborativeWhiteboard = () => {
   }, []);
 
   const handleNudgeFromContextMenu = useCallback((nudgeMessage) => {
-    console.log("Nudge message from context menu:", nudgeMessage);
     setExternalMessages((prev) => [...prev, nudgeMessage]);
   }, []);
 
@@ -1807,6 +1614,60 @@ const CollaborativeWhiteboard = () => {
   const togglePanel = useCallback(() => {
     setIsPanelCollapsed((p) => !p);
   }, []);
+
+  // Ported from CustomContextMenu.jsx, now that the History/Comments panel
+  // renders as a normal sibling instead of from inside tldraw's
+  // components.ContextMenu slot: useEditor() only works for components
+  // actually rendered inside <Tldraw>, so this uses the same
+  // editorInstance.current ref every other sibling (ChatBot, RobotDock,
+  // etc.) already relies on for editor access.
+  // Shared by both the History and Comments panels: select the given
+  // shape and recenter the camera on it, without changing zoom. Returns
+  // the shape (or null) so callers that need to know whether it actually
+  // existed — e.g. to decide whether to also open its comment box — don't
+  // have to look it up a second time.
+  const panToShape = useCallback((shapeId) => {
+    const editor = editorInstance.current;
+    if (!editor || !shapeId) return null;
+
+    const shape = editor.getShape(shapeId);
+    if (!shape) {
+      console.error("[Canvas] Shape not found for id:", shapeId);
+      return null;
+    }
+
+    editor.select(shapeId);
+
+    const bounds = editor.getShapePageBounds(shapeId);
+    if (bounds) {
+      const center = {
+        x: (bounds.minX + bounds.maxX) / 2,
+        y: (bounds.minY + bounds.maxY) / 2,
+      };
+      editor.centerOnPoint(center);
+    }
+
+    return shape;
+  }, []);
+
+  const handleHistoryItemClick = useCallback(
+    (shapeId) => {
+      panToShape(shapeId);
+    },
+    [panToShape]
+  );
+
+  // Comments panel: pan to the shape AND open its comment box — the
+  // commentFocusShapeId/onCommentFocusComputed pair mirrors the existing
+  // nudgeFocusShapeId pattern used for ChatBot, just aimed at
+  // ContextToolbarComponent's floating CommentBox instead.
+  const handleCommentItemClick = useCallback(
+    (shapeId) => {
+      const shape = panToShape(shapeId);
+      if (shape) setCommentFocusShapeId(shapeId);
+    },
+    [panToShape]
+  );
 
   useEffect(() => {
     if (!isRecording || !recordingStartAt) {
@@ -1832,8 +1693,6 @@ const CollaborativeWhiteboard = () => {
   };
 
   const addComment = useCallback((shapeId, commentData) => {
-    console.log("Adding comment for shapeId:", shapeId);
-
     const commentDataWithTime = {
       ...commentData,
       timestamp: new Date().toLocaleString(),
@@ -1872,12 +1731,9 @@ const CollaborativeWhiteboard = () => {
         },
       };
 
-      console.log("Uploading audio to Firebase:", filename);
       const snapshot = await uploadBytes(audioRef, blob, metadata);
-      console.log("Upload successful:", snapshot);
 
       const url = await getDownloadURL(audioRef);
-      console.log("Audio URL:", url);
       return url;
     } catch (error) {
       console.error("Error uploading to Firebase:", error);
@@ -1885,7 +1741,6 @@ const CollaborativeWhiteboard = () => {
         error.code === "storage/unauthorized" ||
         error.code === "storage/cors-error"
       ) {
-        console.log("Using local blob URL as fallback");
         return URL.createObjectURL(blob);
       }
       throw error;
@@ -1915,9 +1770,6 @@ const CollaborativeWhiteboard = () => {
 
   // Shared by both the toolbar button and drag-and-drop, so both paths
   // stay in sync if the upload/creation logic ever changes.
-  // Re-enabled: the sync server's schema now recognizes the "pdf" shape
-  // type (deployed via the Cloudflare Quick Edit patch), confirmed by a
-  // clean room load with zero INVALID_RECORD errors.
   const PDF_SHAPES_ENABLED = true;
 
   const addPdfToCanvas = useCallback(
@@ -2116,8 +1968,6 @@ const CollaborativeWhiteboard = () => {
       const editor = editorInstance.current;
       if (!editor) return;
 
-      console.log("[Chat] openChatForShape ->", shapeId);
-
       let selectedIds = editor.getSelectedShapeIds();
 
       if (shapeId) {
@@ -2131,12 +1981,6 @@ const CollaborativeWhiteboard = () => {
 
       const selection = makeSelectionSummary(editor);
 
-      console.log("[CHAT] Selected Ids: ", selection.ids);
-      const shapesRaw = selection.ids.map((id) => editor.getShape(id));
-      console.log("[Chat] Raw Selected Shapes:", shapesRaw);
-
-      console.log("[Chat] Selection Summary:", selection);
-
       const primaryId = shapeId || selection.primary?.id || selection.ids[0];
       const primaryShape = primaryId ? editor.getShape(primaryId) : null;
 
@@ -2144,7 +1988,6 @@ const CollaborativeWhiteboard = () => {
       setSelectedShape(primaryShape ?? null);
 
       const payload = buildAiPayloadFromSelection(selection, editor);
-      console.log("[Chat] AI Payload from hover Ask AI:", payload);
 
       window.dispatchEvent(
         new CustomEvent("trigger-chatbot", { detail: payload })
@@ -2156,15 +1999,6 @@ const CollaborativeWhiteboard = () => {
   const handlePhaseNudgeClick = useCallback((shapeId) => {
     setNudgeFocusShapeId(shapeId);
   }, []);
-
-  useEffect(() => {
-    panelCollapsedRef.current = isPanelCollapsed;
-  }, [isPanelCollapsed]);
-
-  const togglePanelRef = useRef(togglePanel);
-  useEffect(() => {
-    togglePanelRef.current = togglePanel;
-  }, [togglePanel]);
 
   const shapeReactionsRef = useRef(shapeReactions);
   useEffect(() => {
@@ -2181,20 +2015,15 @@ const CollaborativeWhiteboard = () => {
     commentCountsRef.current = commentCounts;
   }, [commentCounts]);
 
-  const commentsRef = useRef(comments);
-  useEffect(() => {
-    commentsRef.current = comments;
-  }, [comments]);
-
-  const actionHistoryRef = useRef(actionHistory);
-  useEffect(() => {
-    actionHistoryRef.current = actionHistory;
-  }, [actionHistory]);
-
   const userRoleRef = useRef(userRole);
   useEffect(() => {
     userRoleRef.current = userRole;
   }, [userRole]);
+
+  const commentFocusShapeIdRef = useRef(commentFocusShapeId);
+  useEffect(() => {
+    commentFocusShapeIdRef.current = commentFocusShapeId;
+  }, [commentFocusShapeId]);
 
   const selectionModeActiveRef = useRef(selectionModeActive);
   useEffect(() => {
@@ -2271,8 +2100,6 @@ const CollaborativeWhiteboard = () => {
         speech: normalizedSpeechForAnalysis || [],
         source,
       };
-
-      console.log("[Analyze] Payload:", payload);
 
       const res = await fetch(
         "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
@@ -2393,7 +2220,7 @@ const CollaborativeWhiteboard = () => {
 
         if (scope === "public") {
           publishPublicNudge({ trigger, tailShapeIds, metrics }).catch(
-            console.error
+            (err) => console.error("[nudge] failed to publish public nudge:", err)
           );
         }
 
@@ -2434,7 +2261,7 @@ const CollaborativeWhiteboard = () => {
 
     analyzeFn,
     onResult: onProactiveResult,
-    onError: (e) => console.log("[Proactive] analyze error", e),
+    onError: (e) => console.error("[Proactive] analyze error", e),
 
     idleDebounceMs: 3000,
     minGapMs: 10000,
@@ -2469,25 +2296,11 @@ const CollaborativeWhiteboard = () => {
     });
 
     if (meaningfulUtterances.length > 0) {
-      console.log(
-        "[speech] bumping proactive activity from speech:",
-        meaningfulUtterances
-      );
-
       bumpActivity(meaningfulUtterances.length);
     }
 
     prevSpeechCountRef.current = currentCount;
   }, [normalizedSpeechForAnalysis, aiEnabled, editorReady, bumpActivity]);
-
-  const proactiveRef = useRef({
-    eventCount: 0,
-    firstEventAt: 0,
-    lastAnalyzeAt: 0,
-    idleTimer: null,
-    forceTimer: null,
-    inFlight: null,
-  });
 
   function ToolbarComp(props) {
     return <DefaultToolbar {...props} />;
@@ -2551,14 +2364,8 @@ const CollaborativeWhiteboard = () => {
           setSelectedShape={setSelectedShape}
           commentCounts={commentCountsRef.current}
           setCommentCounts={setCommentCounts}
-          comments={commentsRef.current}
-          setComments={setComments}
-          actionHistory={actionHistoryRef.current}
-          setActionHistory={setActionHistory}
           onNudge={(msg) => handleNudgeFromContextMenuRef.current?.(msg)}
           onTargetsChange={setSelectedTargets}
-          isPanelCollapsed={panelCollapsedRef.current}
-          togglePanel={() => togglePanelRef.current?.()}
         />
       );
     };
@@ -2584,6 +2391,8 @@ const CollaborativeWhiteboard = () => {
             }
             setActionHistory={setActionHistory}
             fetchActionHistory={() => fetchActionHistoryRef.current?.()}
+            commentFocusShapeId={commentFocusShapeIdRef.current}
+            onCommentFocusComputed={() => setCommentFocusShapeId(null)}
           />
 
           <HoverActionBadge
@@ -2633,12 +2442,30 @@ const CollaborativeWhiteboard = () => {
       />
     );
 
+    // tldraw's own default behavior is to hide the style panel when
+    // there's nothing selected (and no drawing tool active with stylable
+    // options) — the fact that it was showing constantly means something
+    // was overriding that. Rather than chase whatever CSS was fighting
+    // tldraw's internal visibility logic, this makes it explicit: no
+    // selection, no panel, full stop.
+    const StylePanel = (props) => {
+      const editor = useEditor();
+      const hasSelection = useValue(
+        "style panel has selection",
+        () => editor.getSelectedShapeIds().length > 0,
+        [editor]
+      );
+      if (!hasSelection) return null;
+      return <DefaultStylePanel {...props} />;
+    };
+
     return {
       ContextMenu,
       InFrontOfTheCanvas,
       Toolbar,
       ActionsMenu,
       NavigationPanel,
+      StylePanel,
     };
   }, []);
 
@@ -2681,25 +2508,6 @@ const CollaborativeWhiteboard = () => {
         }`}
         style={{ position: "fixed", inset: 0 }}
       >
-        {/* <div
-          style={{
-            position: "fixed",
-            top: 72,
-            left: 20,
-            zIndex: 10100,
-            padding: "6px 10px",
-            borderRadius: 999,
-            background: "rgba(255,255,255,0.92)",
-            border: "1px solid rgba(0,0,0,0.08)",
-            boxShadow: "0 4px 14px rgba(0,0,0,0.08)",
-            fontSize: 12,
-            fontWeight: 700,
-            color: "#334155",
-          }}
-        >
-          Mode: {isPublicMode ? "Public" : "Private"}
-        </div> */}
-
         <input
           type="file"
           accept="application/pdf"
@@ -2711,28 +2519,7 @@ const CollaborativeWhiteboard = () => {
         <UserContext.Provider value={userCtxValue}>
           <Tldraw
             key={canvasMode}
-            // onMount={(editor) => {
-            //   console.log("[Canvas] Tldraw onMount fired", {
-            //     hasEditor: !!editor,
-            //     mode: canvasMode,
-
-            //     hasStore: !!editor?.store,
-            //     hasListen: !!editor?.store?.listen,
-            //   });
-            //   editorInstance.current = editor;
-            //   console.log("[Canvas] editorInstance.current set", {
-            //     hasEditorRef: !!editorInstance.current,
-            //   });
-            //   setEditorReady(true);
-            // }}
-            // store={isPublicMode ? store : privateStore}
             onMount={(editor) => {
-              console.log("[Canvas] Tldraw onMount fired", {
-                mode: canvasMode,
-                isPublicMode,
-                roomId: isPublicMode ? roomId : privateRoomId,
-              });
-
               editorInstance.current = editor;
               setEditorReady(true);
 
@@ -2874,20 +2661,19 @@ const CollaborativeWhiteboard = () => {
 
               const queued = pendingPublishShapesRef.current;
 
-              console.log("[portal] onMount publish check", {
-                isPublicMode,
-                queuedCount: queued?.shapes?.length || 0,
-                queuedIds: queued?.shapes?.map((s) => s.id) || [],
-              });
-
-              if (isPublicMode && queued?.shapes?.length) {
+              // A publish queued from either direction resolves here: this
+              // onMount fires every time a canvas (re)mounts (canvasMode
+              // flips, which remounts <Tldraw key={canvasMode}>), so we
+              // only consume the queued shapes once we've actually landed
+              // on the mode they were destined for.
+              if (queued?.destinationMode === canvasMode && queued?.shapes?.length) {
                 const targetPageId = editor.getCurrentPageId?.();
 
                 // Anchor the group to THIS editor's own current viewport —
-                // wherever the person is actually looking on the public
-                // canvas right now — instead of the private canvas's
-                // viewport (the earlier bug), while preserving each
-                // shape's original offset from the group's center so
+                // wherever the person is actually looking on the
+                // destination canvas right now — instead of the source
+                // canvas's viewport (the earlier bug), while preserving
+                // each shape's original offset from the group's center so
                 // multi-shape selections keep their relative layout.
                 const destBounds = editor.getViewportPageBounds();
                 const destCenterX = (destBounds.minX + destBounds.maxX) / 2;
@@ -2900,22 +2686,23 @@ const CollaborativeWhiteboard = () => {
                   y: destCenterY + (s.y - queued.groupCenterY) + index * 4,
                 }));
 
-                console.log("[portal] creating shapes on public canvas", {
-                  targetPageId,
-                  destCenterX,
-                  destCenterY,
-                  shapes: shapesToCreate,
-                });
-
-                // ------/
                 try {
                   editor.createShapes(shapesToCreate);
-                  console.log(
-                    "[portal] SUCCESS — created",
-                    shapesToCreate.length,
-                    "shape(s) on public canvas"
-                  );
                   pendingPublishShapesRef.current = null;
+
+                  // Keep whatever just arrived — a single shape or a whole
+                  // group — visibly selected/highlighted on this side, so
+                  // it's obvious what landed and where. Selection persists
+                  // until the user clicks elsewhere, unlike a transient
+                  // flash, which is what "stay highlighted" calls for.
+                  try {
+                    editor.setSelectedShapes(shapesToCreate.map((s) => s.id));
+                  } catch (err) {
+                    console.error(
+                      "[portal] failed to select published shapes:",
+                      err
+                    );
+                  }
 
                   // Last-writer-wins repair pass: whatever Firestore state
                   // exists right now for these shapes (possibly wiped by
@@ -2936,7 +2723,7 @@ const CollaborativeWhiteboard = () => {
                       ([shapeId, meta]) => {
                         restoreShapeMetadata(shapeId, restoreUserContext, {
                           ...meta,
-                          space: "public",
+                          space: queued.destinationMode,
                         }).catch((err) =>
                           console.error(
                             "[portal] failed to restore Firestore metadata for",
@@ -2953,23 +2740,6 @@ const CollaborativeWhiteboard = () => {
                     err
                   );
                 }
-                // ------
-
-                // try {
-                //   editor.createShapes(shapesToCreate);
-
-                //   console.log(
-                //     "[portal] SUCCESS — created",
-                //     shapesToCreate.length,
-                //     "shape(s) on public canvas"
-                //   );
-                //   pendingPublishShapesRef.current = null;
-                // } catch (err) {
-                //   console.error(
-                //     "[portal] FAILED to create queued shapes on public canvas:",
-                //     err
-                //   );
-                // }
               }
             }}
             store={isPublicMode ? store : privateStore}
@@ -3012,14 +2782,6 @@ const CollaborativeWhiteboard = () => {
           }}
         />
 
-        {/* {isPublicMode && (
-          <SessionSpeechCapture
-            className={className}
-            projectName={projectName}
-            teamName={teamName}
-          />
-        )} */}
-
         <RobotDock
           src={robotSrc}
           loop={robotLoop}
@@ -3033,6 +2795,34 @@ const CollaborativeWhiteboard = () => {
           onOpenChat={() => setChatbotOpen(true)}
           zIndex={10070}
         />
+
+        {/* History/Comments panel — previously rendered from inside
+            tldraw's components.ContextMenu slot, which is built on a
+            transient Radix ContextMenu primitive meant for the ephemeral
+            right-click menu. That primitive mounts/unmounts its content
+            and auto-dismisses on outside interaction by design, which a
+            persistent panel doesn't want. As an ordinary sibling here, it
+            has its own independent lifecycle again. */}
+        <div className="panelContainerWrapper">
+          {isPanelCollapsed ? (
+            <ToggleExpandButton
+              isPanelCollapsed={isPanelCollapsed}
+              togglePanel={togglePanel}
+            />
+          ) : (
+            <HistoryCommentPanel
+              actionHistory={actionHistory}
+              comments={comments}
+              selectedShape={selectedShape}
+              isPanelCollapsed={isPanelCollapsed}
+              togglePanel={togglePanel}
+              onHistoryItemClick={handleHistoryItemClick}
+              isPublicCanvas={isPublicMode}
+              shapes={shapesForAnalysis}
+              onCommentItemClick={handleCommentItemClick}
+            />
+          )}
+        </div>
 
         {!showSidebar && (
           <ChatBot
@@ -3091,15 +2881,6 @@ const CollaborativeWhiteboard = () => {
             source,
             nudgeText,
           }) => {
-            console.log(
-              "[Parent] tailShapeIds from /analyze (sidebar):",
-              tailShapeIds
-            );
-            console.log(
-              "[Parent] currentPhase from /analyze (sidebar):",
-              currentPhase
-            );
-
             setPhaseTailShapeIds(tailShapeIds || []);
 
             setCurrentPhaseDetail(currentPhase || null);

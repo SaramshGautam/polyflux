@@ -163,7 +163,7 @@ const Navbar = ({ isPublicCanvas = true }) => {
               }`,
             }}
           >
-            Mode: {isPublicCanvas ? "Public" : "Private"}
+            Canvas: {isPublicCanvas ? "Public" : "Private -- Only you see this"}
           </div>
         )}
       </div>

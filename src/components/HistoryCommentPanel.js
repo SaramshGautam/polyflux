@@ -10,6 +10,16 @@ const HistoryCommentPanel = ({
   isPanelCollapsed,
   togglePanel,
   onHistoryItemClick,
+  // Firestore shape docs (each may carry its own `comments` array) — used
+  // to build the all-comments list, and the click handler that pans to
+  // whichever shape a given comment belongs to and opens its comment box.
+  shapes,
+  onCommentItemClick,
+  // Action History only tracks the shared canvas — private-canvas edits
+  // are personal to that user and have nothing to show. Defaults true so
+  // this keeps working exactly as before for any caller that hasn't been
+  // updated to pass it yet.
+  isPublicCanvas = true,
 }) => {
   const [isViewingHistory, setIsViewingHistory] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(true);
@@ -19,11 +29,6 @@ const HistoryCommentPanel = ({
     const element = scrollRef.current;
     if (!element) return;
 
-    // console.log("Scroll event triggered!");
-    // console.log("scrollTop:", element.scrollTop);
-    // console.log("scrollHeight:", element.scrollHeight);
-    // console.log("clientHeight:", element.clientHeight);
-
     // Show button when user has scrolled down more than 50px
     setShowScrollButton(element.scrollTop > 0);
   };
@@ -31,7 +36,6 @@ const HistoryCommentPanel = ({
   const scrollToTop = () => {
     const element = scrollRef.current;
     if (!element) return;
-    // element.scrollTo({ top: 0, behavior: "smooth" });
     try {
       if (typeof element.scrollTo === "function") {
         element.scrollTo({ top: 0, behavior: "smooth" });
@@ -54,6 +58,18 @@ const HistoryCommentPanel = ({
     });
   };
 
+  // If the canvas switches to private while History is open, land on
+  // Comments instead — History has nothing to show there, and
+  // ToggleButtonGroup itself will hide the button that would let someone
+  // switch back to it, so this is what keeps that transition from
+  // stranding the view on a tab with no way back.
+  useEffect(() => {
+    if (!isPublicCanvas && isViewingHistory) {
+      handleViewChange(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPublicCanvas]);
+
   useEffect(() => {
     requestAnimationFrame(() => {
       if (scrollRef.current) {
@@ -74,26 +90,29 @@ const HistoryCommentPanel = ({
       ></button>
 
       {/* Toggle between History and Comment view */}
-      {/* <ToggleButtonGroup
+      <ToggleButtonGroup
         isViewingHistory={isViewingHistory}
         setIsViewingHistory={handleViewChange}
-      /> */}
+        isPublicCanvas={isPublicCanvas}
+      />
 
       {/* Scrollable Content */}
       <div
         ref={scrollRef}
         className="panel-content overflow-y-auto flex-1 min-h-0 p-2 relative"
         onScroll={handleScroll}
-        // style={{ minHeight: 0 }}
-        // style={{ maxHeight: "100px" }}
       >
         {isViewingHistory ? (
           <HistoryPanel
             actionHistory={actionHistory}
             onHistoryItemClick={onHistoryItemClick}
+            isPublicCanvas={isPublicCanvas}
           />
         ) : (
-          <CommentPanel selectedShape={selectedShape} />
+          <CommentPanel
+            shapes={shapes}
+            onCommentItemClick={onCommentItemClick}
+          />
         )}
       </div>
 

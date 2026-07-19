@@ -198,7 +198,7 @@ export default function ViewerPortal({
         boxShadow: "0 12px 24px rgba(0,0,0,.18)",
         border: "1px solid rgba(0,0,0,.08)",
         overflow: "hidden",
-        zIndex: 10050,
+        // zIndex: 10050,
         display: "flex",
         flexDirection: "column",
         contain: "layout paint size",

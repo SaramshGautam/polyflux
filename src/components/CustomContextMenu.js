@@ -8,14 +8,11 @@ import {
 } from "tldraw";
 import "tldraw/tldraw.css";
 import "../App.css";
-import HistoryCommentPanel from "./HistoryCommentPanel";
-import ToggleExpandButton from "./ToggleExpandButton";
 import { logAction } from "../utils/actionLog";
 
 import {
   registerShape,
   deleteShape,
-  // updateShape,
   startEditSession,
   scheduleUpdateShape,
   endEditSession,
@@ -34,12 +31,6 @@ export default function CustomContextMenu({
   setSelectedShape,
   commentCounts,
   setCommentCounts,
-  comments,
-  setComments,
-  actionHistory,
-  setActionHistory,
-  isPanelCollapsed,
-  togglePanel,
   onNudge,
   onTargetsChange,
   ...props
@@ -65,32 +56,6 @@ export default function CustomContextMenu({
 
   const [panelWidth, setPanelWidth] = useState(340); // default width
   const [isResizing, setIsResizing] = useState(false);
-
-  const handleHistoryItemClick = (shapeId) => {
-    if (!editor || !shapeId) return;
-
-    const shape = editor.getShape(shapeId);
-    if (!shape) {
-      console.warn("[History] Shape not found for id:", shapeId);
-      return;
-    }
-
-    // Select the shape → tldraw will highlight it
-    editor.select(shapeId);
-
-    // (optional) you could also scroll/zoom to it later if you want:
-    const bounds = editor.getShapePageBounds(shapeId);
-    // if (bounds) editor.zoomToBounds(bounds);
-    if (bounds) {
-      const center = {
-        x: (bounds.minX + bounds.maxX) / 2,
-        y: (bounds.minY + bounds.maxY) / 2,
-      };
-
-      // keep current zoom, just move camera to the shape
-      editor.centerOnPoint(center);
-    }
-  };
 
   const getSelectedIds = () => Array.from(editor.getSelectedShapeIds?.() ?? []);
 
@@ -133,14 +98,6 @@ export default function CustomContextMenu({
 
     if (!didCommit) return;
 
-    // endEditSession({ shape, userContext, userId });
-
-    // const newlyCreated = newlyCreatedRef.current;
-    // if (newlyCreated.has(key)) {
-    //   newlyCreated.delete(key); // clear the flag so future edits *do* log
-    //   return;
-    // }
-
     const entry = await makeHistoryEntry({
       userId: actorId,
       verb: "updated",
@@ -148,7 +105,6 @@ export default function CustomContextMenu({
       editor,
       userContext,
     });
-    // setActionHistory((prev) => [entry, ...prev]);
 
     await logAction({
       className,
@@ -177,7 +133,7 @@ export default function CustomContextMenu({
     activeSessions.set(key, ses);
   }
 
-  // helpers (put near the top of CustomContextMenu)
+  // helpers
   function extractShapeText(shape) {
     // prefer single-line richText, else fallback to props.text
     return (
@@ -186,14 +142,6 @@ export default function CustomContextMenu({
       ""
     );
   }
-
-  // function extractImageUrl(editor, shape) {
-  //   const assetId = shape?.props?.assetId;
-  //   if (!assetId) return "";
-  //   const asset = editor.getAsset(assetId);
-  //   // tldraw assets typically keep src under props.src
-  //   return asset?.props?.src || "";
-  // }
 
   async function extractImageUrl(editor, shape, userContext) {
     const assetId = shape?.props?.assetId;
@@ -251,9 +199,7 @@ export default function CustomContextMenu({
 
     const updateSelection = () => {
       const ids = getSelectedIds();
-      onTargetsChange?.(ids); // ✅ bubble up target IDs
-      // const first = getSelectedShapeSafe(ids[0]);
-      // setSelectedShape(first || null);
+      onTargetsChange?.(ids); // bubble up target IDs
       setSelectedShape(ids.length === 1 ? editor.getShape(ids[0]) : null);
     };
 
@@ -275,17 +221,6 @@ export default function CustomContextMenu({
 
   useEffect(() => {
     if (!editor || !className || !projectName || !teamName) return;
-
-    //Logs the shape starting position
-    let startPosition = {};
-
-    const handleShapeMoveStart = () => {
-      const shape = editor.getActiveShape();
-      if (shape) {
-        startPosition = shape.getCenter();
-      }
-      // console.log(`Shape Position: ${startPosition}`);
-    };
 
     const logShapeAddition = async (newShape) => {
       if (!newShape) {
@@ -309,16 +244,11 @@ export default function CustomContextMenu({
 
       newlyCreatedRef.current.add(newShape.id);
 
-      // await registerShape(newShape, userContext);
       const finalImageUrl = await registerShape(newShape, userContext, editor);
 
       if (newShape.type === "image" && finalImageUrl) {
         const live = editor.getShape(newShape.id);
         if (live) {
-          console.log(
-            "[logShapeAddition] Patching image shape with imageUrl:",
-            finalImageUrl
-          );
           editor.updateShape({
             id: live.id,
             type: live.type,
@@ -327,12 +257,12 @@ export default function CustomContextMenu({
               url: finalImageUrl,
             },
           });
+        } else {
+          console.error(
+            "[logShapeAddition] Uploaded image URL but live shape not found:",
+            newShape.id
+          );
         }
-      } else {
-        console.warn(
-          "[logShapeAddition] Uploaded image URL but live shape not found:",
-          newShape.id
-        );
       }
 
       const entry = await makeHistoryEntry({
@@ -342,7 +272,6 @@ export default function CustomContextMenu({
         editor,
         userContext,
       });
-      // setActionHistory((prev) => [entry, ...prev]);
 
       await logAction({
         className,
@@ -382,13 +311,12 @@ export default function CustomContextMenu({
 
       const deleted = { id: deletedShapeID.id, type: "shape" };
 
-      const entry = makeHistoryEntry({
+      await makeHistoryEntry({
         userId: actorId,
         verb: "deleted",
         shape: deleted,
         editor,
       });
-      // setActionHistory((prev) => [entry, ...prev]);
 
       await logAction({
         className,
@@ -403,67 +331,54 @@ export default function CustomContextMenu({
       });
     };
 
-    // ✅ Only log adds/deletes that come from the LOCAL user's actions
-    const unlistenUserAddsDeletes = editor.store.listen(
-      (entry) => {
-        // With { scope: "user" }, this should already be local-only,
-        // but keep this guard anyway if tldraw ever changes semantics.
-        if (entry?.source && entry.source !== "user") return;
+    // Only log adds/deletes that come from the LOCAL user's actions
+    const unlistenUserAddsDeletes = editor.store.listen((entry) => {
+      // With { scope: "user" }, this should already be local-only,
+      // but keep this guard anyway if tldraw ever changes semantics.
+      if (entry?.source && entry.source !== "user") return;
 
-        const added = entry?.changes?.added
-          ? Object.values(entry.changes.added)
-          : [];
-        const removed = entry?.changes?.removed
-          ? Object.values(entry.changes.removed)
-          : entry?.changes?.deleted
-          ? Object.values(entry.changes.deleted)
-          : [];
+      const added = entry?.changes?.added
+        ? Object.values(entry.changes.added)
+        : [];
+      const removed = entry?.changes?.removed
+        ? Object.values(entry.changes.removed)
+        : entry?.changes?.deleted
+        ? Object.values(entry.changes.deleted)
+        : [];
 
-        // Added records -> log "added" once per shape
-        for (const rec of added) {
-          const isShapeRecord =
-            rec?.typeName === "shape" ||
-            rec?.type === "shape" ||
-            rec?.kind === "shape";
-          if (!isShapeRecord) continue;
+      // Added records -> log "added" once per shape
+      for (const rec of added) {
+        const isShapeRecord =
+          rec?.typeName === "shape" ||
+          rec?.type === "shape" ||
+          rec?.kind === "shape";
+        if (!isShapeRecord) continue;
 
-          const shape = editor.getShape(rec.id);
-          if (!shape) continue;
+        const shape = editor.getShape(rec.id);
+        if (!shape) continue;
 
-          // IMPORTANT: log only local creates (scope=user should enforce this)
-          logShapeAddition(shape);
-        }
-
-        // Removed records -> log "deleted" once per shape
-        for (const rec of removed) {
-          const isShapeRecord =
-            rec?.typeName === "shape" ||
-            rec?.type === "shape" ||
-            rec?.kind === "shape";
-          if (!isShapeRecord) continue;
-
-          // Your existing handler expects { id: <shapeId> }
-          handleShapeDeletion({ id: rec.id });
-        }
+        // IMPORTANT: log only local creates (scope=user should enforce this)
+        logShapeAddition(shape);
       }
-      // { scope: "user" }
-    );
 
-    // const shapeCreateHandler = editor.sideEffects.registerAfterCreateHandler(
-    //   "shape",
-    //   logShapeAddition
-    // );
-    // const shapeDeleteHandler = editor.sideEffects.registerAfterDeleteHandler(
-    //   "shape",
-    //   handleShapeDeletion
-    // );
+      // Removed records -> log "deleted" once per shape
+      for (const rec of removed) {
+        const isShapeRecord =
+          rec?.typeName === "shape" ||
+          rec?.type === "shape" ||
+          rec?.kind === "shape";
+        if (!isShapeRecord) continue;
+
+        handleShapeDeletion({ id: rec.id });
+      }
+    });
 
     const shapeUpdateHandler = editor.sideEffects.registerAfterChangeHandler(
       "shape",
       async (updatedShape) => {
         if (!updatedShape) return;
 
-        // Re-read live shape (good!)
+        // Re-read live shape
         const liveShape = editor.getShape(updatedShape.id);
         if (!liveShape) return;
 
@@ -496,8 +411,6 @@ export default function CustomContextMenu({
     );
 
     return () => {
-      // shapeCreateHandler();
-      // shapeDeleteHandler();
       unlistenUserAddsDeletes?.();
       shapeUpdateHandler();
     };
@@ -518,16 +431,12 @@ export default function CustomContextMenu({
           if (!curr.has(leftId)) {
             const leftShape = getSelectedShapeSafe(leftId);
             if (leftShape) {
-              // const userId = auth.currentUser
-              //   ? auth.currentUser.displayName
-              //   : "anon";
               const userContext = {
                 className,
                 projectName,
                 teamName,
                 userId: actorId,
               };
-              // end if any
               endSessionIfAny(leftShape, userContext, actorId);
             }
           }
@@ -553,9 +462,6 @@ export default function CustomContextMenu({
             getSelectedShapeSafe(lastEditingId) ||
             editor.getShape(lastEditingId);
           if (shape) {
-            const userId = auth.currentUser
-              ? auth.currentUser.displayName
-              : "anon";
             const userContext = {
               className,
               projectName,
@@ -605,16 +511,9 @@ export default function CustomContextMenu({
           }
         );
 
-        const result = await response.json();
-        console.log("📦 Cluster Results:", result);
-
-        // Optional: attach to shapes or show on canvas
-        result.clusters.forEach((cluster, index) => {
-          console.log(`🧠 Cluster ${index + 1}:`, cluster);
-          // You can optionally highlight, group, or tag these on canvas
-        });
+        await response.json();
       } catch (err) {
-        console.error("❌ Clustering failed:", err);
+        console.error("Clustering failed:", err);
       }
     };
 
@@ -625,15 +524,7 @@ export default function CustomContextMenu({
 
   useEffect(() => {
     const updateSelectedShape = (shape) => {
-      if (!shape) {
-        // console.log("No shape selected.");
-        setSelectedShape(null);
-      } else {
-        if (shape) {
-          // console.log("Selected shape:", shape);
-          setSelectedShape(shape);
-        }
-      }
+      setSelectedShape(shape || null);
     };
 
     // Also update when selection changes
@@ -644,36 +535,13 @@ export default function CustomContextMenu({
       }
     });
 
-    const handleClickOutside = (event) => {
-      if (
-        !editor.getShapeAtPoint(
-          editor.screenToPage({ x: event.clientX, y: event.clientY })
-        )
-      ) {
-        // console.log("User clicked outside. Deselecting shape.");
-        // setSelectedShape(null);
-      }
-    };
-
-    document.addEventListener("mousedown", handleClickOutside);
-
     return () => {
-      // editor.off("pointerdown", pointerDownHandler);
       unsubscribe();
     };
-  }, [editor, setSelectedShape]);
+  }, [editor, setSelectedShape, selectedShape]);
 
   const handleContextMenu = (event) => {
     event.preventDefault();
-    // const point = editor.screenToPage({ x: event.clientX, y: event.clientY });
-    // const hit = editor.getShapeAtPoint(point);
-    // // const shape = editor.getShapeAtPoint(point);
-
-    // const selectedIds = new Set(editor.getSelectedShapeIds?.() ?? []);
-
-    // if (hit && selectedIds.size === 0) {
-    //   editor.select(hit.id);
-    // }
 
     const point = editor.screenToPage({ x: event.clientX, y: event.clientY });
     const hit = editor.getShapeAtPoint(point);
@@ -693,14 +561,6 @@ export default function CustomContextMenu({
     if (current.size === 0) {
       editor.select(hit.id);
     }
-
-    // if (shape) {
-    //   editor.select(shape.id);
-    //   setSelectedShape(shape);
-    //   onTargetsChange?.([shape.id]);
-
-    //   // console.log("Shape ID:", shape.id);
-    // }
   };
 
   // --- CLUSTERING POSITION HELPERS ---
@@ -737,10 +597,6 @@ export default function CustomContextMenu({
           y: newY,
         });
       });
-
-      console.log(
-        `📍 Positioned cluster ${clusterKey} at (${clusterX}, ${clusterY})`
-      );
     });
   };
 
@@ -778,10 +634,6 @@ export default function CustomContextMenu({
           y: newY,
         });
       });
-
-      console.log(
-        `🔵 Positioned cluster ${clusterKey} around (${clusterCenterX}, ${clusterCenterY})`
-      );
     });
   };
 
@@ -789,7 +641,6 @@ export default function CustomContextMenu({
     try {
       const shapesRef = collection(
         db,
-        // `classrooms/${className}/Projects/${projectName}/teams/${teamName}/shapes/`
         "classrooms",
         className,
         "Projects",
@@ -799,13 +650,10 @@ export default function CustomContextMenu({
         "shapes"
       );
 
-      console.log("📂 Collection reference created:", shapesRef);
       const snapshot = await getDocs(shapesRef);
-      console.log("📄 Documents fetched. Count:", snapshot.size);
 
       const shapeDocs = snapshot.docs.map((doc) => {
         const data = doc.data();
-        console.log(`📌 Fetched shape: ${data.shapeId}`, data);
         return {
           ...data,
           shapeId: doc.id,
@@ -825,8 +673,6 @@ export default function CustomContextMenu({
           })),
       };
 
-      console.log("Payload for cluster suggestion:", requestPayload);
-
       const response = await fetch(
         "http://127.0.0.1:5000/api/cluster_suggestion",
         {
@@ -839,7 +685,6 @@ export default function CustomContextMenu({
       );
 
       const result = await response.json();
-      console.log("Clusters:", result);
 
       moveShapesToClusters(result);
 
@@ -857,36 +702,14 @@ export default function CustomContextMenu({
     }
   };
 
-  // const handleTriggerAgentsClick = async () => {
-  //   try {
-  //     const canvasId = `${className}_${projectName}_${teamName}`;
-  //     console.log("Triggering agents for Canvas ID:", canvasId);
-
-  //     const res = await fetch("http://localhost:8080/process", {
-  //       method: "POST",
-  //       headers: {
-  //         "Content-Type": "application/json",
-  //       },
-  //       body: JSON.stringify({ canvas_id: canvasId }),
-  //     });
-
-  //     const result = await res.json();
-  //     console.log("Agents triggered successfully:", result);
-  //   } catch (error) {
-  //     console.error("Error triggering agents:", error);
-  //   }
-  // };
-
   const handleTriggerAgentsClick = async () => {
     try {
       setAgentsLoading(true);
       const canvasId = `${className}_${projectName}_${teamName}`;
-      console.log("Triggering agents for Canvas ID:", canvasId);
 
       const res = await fetch(
         "https://rv4u3xtdyi.execute-api.us-east-2.amazonaws.com/Prod/process",
         {
-          // const res = await fetch("http://localhost:8080/process", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -898,18 +721,11 @@ export default function CustomContextMenu({
       const result = await res.json();
       if (!res.ok || result.error) {
         console.error("Nudge analyze error:", result.error || res.statusText);
-        // Optionally show a soft error badge instead of crashing UI
         return;
       }
 
-      console.log("Agents triggered successfully:", result);
-
       if (result?.nudges && result.nudges.length > 0) {
         const topNudge = result.nudges[0];
-
-        // if (onNudge) {
-        //   onNudge({ sender: "bot", topNudge });
-        // }
 
         if (onNudge) {
           onNudge({
@@ -921,18 +737,6 @@ export default function CustomContextMenu({
             targets: topNudge.targets || [],
           });
         }
-
-        // window.dispatchEvent(
-        //   new CustomEvent("trigger-chatbot", {
-        //     detail: {
-        //       snippet: topNudge.message,
-        //       source: `agent-${topNudge.type}`,
-        //       position,
-        //     },
-        //   })
-        // );
-      } else {
-        console.log("No nudges returned from agents.");
       }
     } catch (error) {
       console.error("Error triggering agents:", error);
@@ -1016,25 +820,6 @@ export default function CustomContextMenu({
       <DefaultContextMenu {...props}>
         <DefaultContextMenuContent />
       </DefaultContextMenu>
-
-      <div className="panelContainerWrapper">
-        {!isPanelCollapsed && (
-          <HistoryCommentPanel
-            actionHistory={actionHistory}
-            comments={comments}
-            selectedShape={selectedShape}
-            isPanelCollapsed={isPanelCollapsed}
-            togglePanel={togglePanel}
-            onHistoryItemClick={handleHistoryItemClick}
-          />
-        )}
-        {isPanelCollapsed && (
-          <ToggleExpandButton
-            isPanelCollapsed={isPanelCollapsed}
-            togglePanel={togglePanel}
-          />
-        )}
-      </div>
     </div>
   );
 }

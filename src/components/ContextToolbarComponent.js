@@ -27,6 +27,12 @@ const ContextToolbarComponent = track(
     setSelectedShape,
     setActionHistory,
     fetchActionHistory,
+    // Set by the Comments panel when a comment is clicked there — once
+    // selection catches up to this shape (see the effect below), its
+    // comment box opens automatically and this gets cleared via the
+    // callback.
+    commentFocusShapeId,
+    onCommentFocusComputed,
   }) => {
     const editor = useEditor();
     const tooltipWidth = 300;
@@ -45,6 +51,18 @@ const ContextToolbarComponent = track(
     const selectedShape =
       selectedIds.length === 1 ? editor.getShape(selectedIds[0]) : null;
 
+    // The parent calls panToShape() then sets commentFocusShapeId before
+    // tldraw's selection has necessarily caught up yet — this effect
+    // re-checks on every render (this component is track()-wrapped, so it
+    // re-renders whenever the store's selection changes) and only opens
+    // once selectedShape actually matches the requested target.
+    useEffect(() => {
+      if (!commentFocusShapeId) return;
+      if (selectedShape?.id !== commentFocusShapeId) return;
+      setShowCommentBox(true);
+      onCommentFocusComputed?.();
+    }, [commentFocusShapeId, selectedShape?.id, onCommentFocusComputed]);
+
     // Close picker when clicking outside
     useEffect(() => {
       const handleClickOutside = (e) => {
@@ -57,66 +75,7 @@ const ContextToolbarComponent = track(
         document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    // useEffect(() => {
-    //   if (selectedShape) {
-    //     fetchCommentCount(selectedShape.id);
-    //     fetchReactions(selectedShape.id);
-    //     setShowEmojiPicker(false);
-    //     setShowCommentBox(false);
-    //   }
-    // }, [selectedShape?.id]);
-
-    const fetchCommentCount = async (shapeId) => {
-      const shapeRef = doc(
-        db,
-        "classrooms",
-        className,
-        "Projects",
-        projectName,
-        "teams",
-        teamName,
-        "shapes",
-        shapeId
-      );
-      try {
-        const snap = await getDoc(shapeRef);
-        if (snap.exists()) {
-          const comments = snap.data().comments || [];
-          setCommentCount(comments.length);
-        }
-      } catch (err) {
-        console.error("Error fetching comment count:", err);
-      }
-    };
-
-    // const fetchReactions = async (shapeId) => {
-    //   const shapeRef = doc(
-    //     db,
-    //     "classrooms",
-    //     className,
-    //     "Projects",
-    //     projectName,
-    //     "teams",
-    //     teamName,
-    //     "shapes",
-    //     shapeId
-    //   );
-    //   try {
-    //     const snap = await getDoc(shapeRef);
-    //     if (!snap.exists()) {
-    //       setShapeReactions((prev) => ({ ...prev, [shapeId]: {} }));
-    //       return;
-    //     }
-    //     setShapeReactions((prev) => ({
-    //       ...prev,
-    //       [shapeId]: snap.data().reactions || {},
-    //     }));
-    //   } catch (err) {
-    //     console.error("Failed to fetch reactions:", err);
-    //   }
-    // };
-
-    // Replace the fetchReactions useEffect with a live listener
+    // Live listener for reactions + comment count on the selected shape
     useEffect(() => {
       if (!selectedShape?.id || !className || !projectName || !teamName) return;
 
@@ -202,13 +161,20 @@ const ContextToolbarComponent = track(
               [emoji]: [...usersReacted, userName],
             },
           }));
-          await logAction(
-            { className, projectName, teamName },
-            `reacted with ${emoji}`,
-            userName,
+          // logAction takes a single options object, not positional args —
+          // see the matching fix in CommentBox.js for the full story on
+          // why the old call here was silently dropping verb/shapeId/
+          // shapeType and producing invalid Firestore writes.
+          await logAction({
+            className,
+            projectName,
+            teamName,
+            actorId: userName,
+            actorUid: user?.uid || null,
+            verb: `reacted with ${emoji} on`,
             shapeId,
-            selectedShape.type
-          );
+            shapeType: selectedShape.type,
+          });
         }
       } catch (err) {
         console.error("Error toggling reaction:", err);
@@ -223,121 +189,6 @@ const ContextToolbarComponent = track(
     const handleReactionClick = async (emoji) => {
       await toggleReaction(emoji);
     };
-
-    // const handleEmojiSelect = async (emojiData) => {
-    //   if (!user || !selectedShape) return;
-
-    //   const emoji = emojiData.emoji;
-    //   const shapeId = selectedShape.id;
-    //   const userName = user.displayName || "Anonymous";
-
-    //   const shapeRef = doc(
-    //     db,
-    //     "classrooms",
-    //     className,
-    //     "Projects",
-    //     projectName,
-    //     "teams",
-    //     teamName,
-    //     "shapes",
-    //     shapeId
-    //   );
-    //   const usersReacted = shapeReactions[shapeId]?.[emoji] || [];
-    //   const hasReacted = usersReacted.includes(userName);
-
-    //   try {
-    //     if (hasReacted) {
-    //       await setDoc(
-    //         shapeRef,
-    //         { [`reactions.${emoji}`]: arrayRemove(userName) },
-    //         { merge: true }
-    //       );
-    //       setShapeReactions((prev) => ({
-    //         ...prev,
-    //         [shapeId]: {
-    //           ...prev[shapeId],
-    //           [emoji]: usersReacted.filter((u) => u !== userName),
-    //         },
-    //       }));
-    //     } else {
-    //       await setDoc(
-    //         shapeRef,
-    //         { [`reactions.${emoji}`]: arrayUnion(userName) },
-    //         { merge: true }
-    //       );
-    //       setShapeReactions((prev) => ({
-    //         ...prev,
-    //         [shapeId]: {
-    //           ...prev[shapeId],
-    //           [emoji]: [...usersReacted, userName],
-    //         },
-    //       }));
-    //       await logAction(
-    //         { className, projectName, teamName },
-    //         `reacted with ${emoji}`,
-    //         userName,
-    //         shapeId,
-    //         selectedShape.type
-    //       );
-    //     }
-    //   } catch (err) {
-    //     console.error("Error updating reaction:", err);
-    //   }
-
-    //   setShowEmojiPicker(false);
-    // };
-
-    // const handleReactionClick = async (emoji) => {
-    //   if (!user || !selectedShape) return;
-
-    //   const shapeId = selectedShape.id;
-    //   const userName = user.displayName || "Anonymous";
-    //   const shapeRef = doc(
-    //     db,
-    //     "classrooms",
-    //     className,
-    //     "Projects",
-    //     projectName,
-    //     "teams",
-    //     teamName,
-    //     "shapes",
-    //     shapeId
-    //   );
-    //   const usersReacted = shapeReactions[shapeId]?.[emoji] || [];
-    //   const hasReacted = usersReacted.includes(userName);
-
-    //   try {
-    //     if (hasReacted) {
-    //       await setDoc(
-    //         shapeRef,
-    //         { [`reactions.${emoji}`]: arrayRemove(userName) },
-    //         { merge: true }
-    //       );
-    //       setShapeReactions((prev) => ({
-    //         ...prev,
-    //         [shapeId]: {
-    //           ...prev[shapeId],
-    //           [emoji]: usersReacted.filter((u) => u !== userName),
-    //         },
-    //       }));
-    //     } else {
-    //       await setDoc(
-    //         shapeRef,
-    //         { [`reactions.${emoji}`]: arrayUnion(userName) },
-    //         { merge: true }
-    //       );
-    //       setShapeReactions((prev) => ({
-    //         ...prev,
-    //         [shapeId]: {
-    //           ...prev[shapeId],
-    //           [emoji]: [...usersReacted, userName],
-    //         },
-    //       }));
-    //     }
-    //   } catch (err) {
-    //     console.error("Error toggling reaction:", err);
-    //   }
-    // };
 
     const selectionRotatedPageBounds = editor.getSelectionRotatedPageBounds();
     if (!selectionRotatedPageBounds || !selectedShape) return null;

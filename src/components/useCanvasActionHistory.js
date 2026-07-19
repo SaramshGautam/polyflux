@@ -58,11 +58,23 @@ function normalizeHistoryRow(docSnap) {
  * @property {string} projectName
  * @property {string} teamName
  * @property {boolean} [enabled=true]
- * @property {number} [maxResults=300]
+ * @property {number} [maxResults=150]
  */
 
 /**
  * Firestore live action history stream for a team canvas.
+ *
+ * Performance note: onSnapshot fires on every write, but it doesn't hand
+ * you a diff by default — snap.docs is the FULL current result set every
+ * time. The naive `snap.docs.map(normalizeHistoryRow)` re-normalizes every
+ * row on every single update, which gets expensive fast once the list is
+ * a few hundred entries deep and someone's actively editing (each edit
+ * re-triggers the listener). Firestore does expose the actual diff via
+ * `snap.docChanges()`, with each change carrying `oldIndex`/`newIndex`
+ * telling you exactly where to splice it into an ordered array mirror —
+ * that's the pattern used below, so a single new/changed doc only costs
+ * one normalize + one splice, not a full re-map of everything.
+ *
  * @param {UseCanvasActionHistoryArgs} args
  */
 export function useCanvasActionHistory({
@@ -70,7 +82,7 @@ export function useCanvasActionHistory({
   projectName,
   teamName,
   enabled = true,
-  maxResults = 300,
+  maxResults = 150,
 }) {
   const [actionHistory, setActionHistory] = useState([]);
 
@@ -96,7 +108,9 @@ export function useCanvasActionHistory({
   }, [className, projectName, teamName]);
 
   useEffect(() => {
-    // If params are missing or hook disabled, clear and do nothing.
+    // If params are missing or hook disabled, clear and do nothing. This
+    // is also what keeps the private canvas from paying for a listener at
+    // all — the caller passes enabled={isPublicMode}.
     if (!enabled || !actionsRef) {
       setActionHistory([]);
       return;
@@ -111,16 +125,31 @@ export function useCanvasActionHistory({
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const rows = snap.docs.map(normalizeHistoryRow);
+        setActionHistory((prev) => {
+          // Mirror the query's ordered result set using Firestore's own
+          // documented pattern: for each change, remove the doc from its
+          // old position (if it had one) and insert it at its new one.
+          // "added" has oldIndex === -1 (nothing to remove); "removed"
+          // has newIndex === -1 (nothing to insert). This touches only
+          // the docs that actually changed, not the whole array.
+          const next = prev.slice();
 
-        // If you ever see weird ordering due to missing createdAt,
-        // you can optionally enforce sorting here using timestamp.
-        // rows.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+          snap.docChanges().forEach((change) => {
+            if (change.oldIndex !== -1) {
+              next.splice(change.oldIndex, 1);
+            }
+            if (change.type !== "removed") {
+              const row = normalizeHistoryRow(change.doc);
+              const insertAt = Math.min(change.newIndex, next.length);
+              next.splice(insertAt, 0, row);
+            }
+          });
 
-        setActionHistory(rows);
+          return next;
+        });
       },
       (err) => {
-        console.error("❌ Error subscribing to action history:", err);
+        console.error("Error subscribing to action history:", err);
       }
     );
 

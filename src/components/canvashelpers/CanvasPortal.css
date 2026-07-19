@@ -1,0 +1,25 @@
+/* Keyframes for CanvasPortal.jsx.
+   Split out of an inline <style> tag so the component's JS and its CSS
+   are in separate files, like the rest of the codebase (ChatBot.css,
+   ChatSidebar.css, etc.). Import this file once from CanvasPortal.jsx. */
+
+@keyframes portalTwinkle {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.05;
+    transform: scale(0.5);
+  }
+}
+
+@keyframes portalTextSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

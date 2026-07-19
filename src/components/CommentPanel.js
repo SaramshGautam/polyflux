@@ -1,79 +1,121 @@
-import React, { useState, useEffect } from "react";
-import { useParams } from "react-router-dom";
-import { fetchCommentsForShape } from "../utils/firestoreHelpers";
+import React, { useMemo } from "react";
 import "../App.css";
 
-// export default function CommentPanel({ comments }) {
-//   return (
-//     <div className="commentsPanel">
-//       <h4 className="commentsTitle">Comments</h4>
-//       <ul className="commentsList">
-//         {comments.map((comment, index) => (
-//           <li key={index} className="commentItem">
-//             <strong>{comment.userId}:</strong> {comment.text}
-//             <div className="timestamp">{comment.timestamp}</div>
-//           </li>
-//         ))}
-//       </ul>
-//     </div>
-//   );
-// }
+// Best-effort label for a shape so a comment reads "commented on <label>"
+// instead of just a bare shape type. Firestore shape docs mirror a few
+// different possible text locations depending on how/when they were
+// written (flat `text`, or the original tldraw `props.text` /
+// `props.richText`), so this checks them in the same fallback order the
+// rest of the app already uses (see CustomContextMenu.jsx's cluster
+// payload builder).
+function getShapeLabel(shape) {
+  const text =
+    shape?.text ||
+    shape?.props?.text ||
+    shape?.props?.richText?.content?.[0]?.content?.[0]?.text ||
+    "";
+  if (text) return text.length > 60 ? text.slice(0, 60) + "…" : text;
+  return shape?.shapeType || shape?.type || "shape";
+}
 
-const CommentPanel = ({ selectedShape }) => {
-  const [comments, setComments] = useState([]);
-  // console.log(selectedShape.id);
-  const { className, projectName, teamName } = useParams();
+function commentTime(c) {
+  const raw = c.Timestamp || c.timestamp;
+  if (!raw) return 0;
+  const t = new Date(raw).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
 
-  useEffect(() => {
-    if (!selectedShape) {
-      return;
-    }
-    if (selectedShape) {
-      fetchCommentsForShape(selectedShape.id, {
-        className,
-        projectName,
-        teamName,
-      }).then(setComments);
-    }
-  }, [selectedShape]);
+const CommentPanel = ({
+  shapes = [],
+  // Called with a shapeId when a comment is clicked — the parent is
+  // expected to both pan the canvas to that shape AND open its comment
+  // box (see handleCommentItemClick in CollaborativeWhiteboard.jsx).
+  onCommentItemClick,
+}) => {
+  // Flatten every shape's `comments` array into one list, each entry
+  // tagged with which shape it belongs to, then sort newest-first across
+  // the whole board — this is what makes it "comments for specific items
+  // on the screen" rather than only whatever's currently selected.
+  const allComments = useMemo(() => {
+    const flat = [];
 
-  // return (
-  //   <div className="commentPanel">
-  //     <h4>Comments</h4>
-  //     {comments.length === 0 ? (
-  //       <p>No comments yet.</p>
-  //     ) : (
-  //       <ul>
-  //         {comments.map((comment, index) => (
-  //           <li key={index}>
-  //             <strong>{comment.userId}</strong>: {comment.text} <br />
-  //             <small>{new Date(comment.timestamp).toLocaleString()}</small>
-  //           </li>
-  //         ))}
-  //       </ul>
-  //     )}
-  //   </div>
-  // );
+    (shapes || []).forEach((shape) => {
+      const shapeComments = Array.isArray(shape?.comments)
+        ? shape.comments
+        : [];
+      if (!shapeComments.length) return;
+
+      const shapeId = shape.id || shape.shapeId;
+      const shapeLabel = getShapeLabel(shape);
+
+      shapeComments.forEach((c, idx) => {
+        flat.push({
+          ...c,
+          _key: `${shapeId}:${idx}:${c.Timestamp || c.timestamp || idx}`,
+          _shapeId: shapeId,
+          _shapeLabel: shapeLabel,
+        });
+      });
+    });
+
+    flat.sort((a, b) => commentTime(b) - commentTime(a));
+    return flat;
+  }, [shapes]);
+
   return (
-    <div className="historyPanel">
-      <h4 className="historyTitle">Comments</h4>
-      {comments.length === 0 ? (
-        <p className="historyEmpty">No comments yet.</p>
-      ) : (
-        <ul className="historyList">
-          {comments
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)) // Sort by most recent
-            .map((comment, index) => (
-              <li key={index} className="historyItem">
-                <strong>{comment.userId || "Unknown User"}</strong>:{" "}
-                {comment.text}
-                <div className="timestamp">
-                  {new Date(comment.timestamp).toLocaleString()}
-                </div>
-              </li>
-            ))}
-        </ul>
-      )}
+    // Same self-contained sticky-title layout as HistoryPanel — title
+    // stays put as a flex sibling outside the scrolling list, rather than
+    // depending on a matching rule existing in App.css.
+    <div
+      className="historyPanel"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        minHeight: 0,
+      }}
+    >
+      <h4 className="historyTitle" style={{ flex: "0 0 auto", margin: 0 }}>
+        Comments
+      </h4>
+
+      <div
+        className="historyScrollArea"
+        style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}
+      >
+        {allComments.length === 0 ? (
+          <p className="historyEmpty">No comments yet.</p>
+        ) : (
+          <ul className="historyList" style={{ margin: 0 }}>
+            {allComments.map((c) => {
+              const isClickable = !!(c._shapeId && onCommentItemClick);
+              return (
+                <li
+                  key={c._key}
+                  className={`historyItem ${
+                    isClickable ? "historyItem--clickable" : ""
+                  }`}
+                  onClick={() => {
+                    if (isClickable) onCommentItemClick(c._shapeId);
+                  }}
+                >
+                  <strong>{c.userId || "Unknown User"}</strong>{" "}
+                  <span style={{ color: "#888" }}>on {c._shapeLabel}</span>
+                  <div className="historyTextPreview" title={c.text}>
+                    “{c.text}”
+                  </div>
+                  <div className="timestamp">
+                    {c.Timestamp ||
+                      (c.timestamp
+                        ? new Date(c.timestamp).toLocaleString()
+                        : "Unknown time")}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
     </div>
   );
 };

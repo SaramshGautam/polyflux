@@ -59,13 +59,7 @@ function b64ToBlob(b64, mime = "image/png") {
 
 const safe = (s = "") => s.replace(/[^\w.@-]/g, "_");
 
-async function uploadB64ToFirebase({
-  storage,
-  canvasId,
-  // user_id,
-  b64,
-  idx = 0,
-}) {
+async function uploadB64ToFirebase({ storage, canvasId, b64, idx = 0 }) {
   const auth = getAuth();
   if (!auth.currentUser) {
     await signInAnonymously(auth);
@@ -73,10 +67,8 @@ async function uploadB64ToFirebase({
   const uid = auth.currentUser?.uid || "anon";
 
   const ts = Date.now();
-  // const uidSafe = (user_id || "anon").replace(/[^\w.@-]/g, "_");
   const canvasSafe = (canvasId || "canvas").replace(/[^\w.@-]/g, "_");
   const { b64: raw, contentType } = normalizeB64(b64);
-  // const path = `generated/${canvasSafe}/${uidSafe}/${ts}-${idx}.png`;
 
   const ext =
     contentType === "image/jpeg"
@@ -89,23 +81,18 @@ async function uploadB64ToFirebase({
       ? "svg"
       : "png";
 
-  // const path = `generated/${canvasSafe}/${uid}/${ts}-${idx}.png`;
   const path = `generated/${canvasSafe}/${uid}/${ts}-${idx}.${ext}`;
 
-  // const blob = b64ToBlob(b64, "image/png");
   const blob = b64ToBlob(raw, contentType);
 
   const ref = sRef(storage, path);
 
   await uploadBytes(ref, blob, {
-    // contentType: "image/png",
     contentType,
     cacheControl: "public, max-age=31536000, immutable",
     customMetadata: {
       source: "chatbot",
-      // canvasId,
       canvasId: String(canvasId || ""),
-      // user_id,
       createdAt: new Date(ts).toISOString(),
     },
   });
@@ -146,7 +133,7 @@ const guessContentType = (filename, fallback = "image/png") => {
   return fallback;
 };
 
-// cache so we don’t re-upload the same source URL in one session
+// cache so we don't re-upload the same source URL in one session
 const mirroredCache = new Map();
 
 /**
@@ -171,11 +158,6 @@ async function mirrorImageToFirebase(srcUrl, { canvasId, user_id }) {
   const path = `generated/${canvasSafe}/${uidSafe}/${ts}-${baseName}`;
 
   // 3) upload
-  // const {
-  //   ref: sRef,
-  //   uploadBytes,
-  //   getDownloadURL,
-  // } = await import("firebase/storage"); // already imported higher; left for clarity
   const r = sRef(storage, path);
   await uploadBytes(r, blob, {
     contentType,
@@ -240,7 +222,7 @@ function getNudgeHeader({ phase, triggerId, triggerLabel }) {
 
   // Early convergence
   if (t === "early_convergence") {
-    return "You’re narrowing fast. Check for missing alternatives.";
+    return "You're narrowing fast. Check for missing alternatives.";
   }
 
   // Refinement loop
@@ -305,7 +287,6 @@ const ChatBot = ({
   onClose,
 }) => {
   const [userInput, setUserInput] = useState("");
-  // const [isOpen, setIsOpen] = useState(variant === 'floating');
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [clipNotes, setClipNotes] = useState([]);
@@ -338,7 +319,6 @@ const ChatBot = ({
       const auth = getAuth();
       const uid = auth.currentUser?.uid || null;
 
-      // const safeCanvasId = String(canvasId || "unknown").replace(/_/g, "/");
       const toCanvasPath = (flatId) => {
         const raw = String(flatId || "").trim();
 
@@ -351,9 +331,6 @@ const ChatBot = ({
 
         return `/${classroom}/Projects/${project}/teams/${team}/`;
       };
-
-      const toFirestoreDocId = (flatId) =>
-        String(flatId || "unknown").replace(/[^\w.@-]/g, "_"); // keep it safe
 
       // Basic envelope
       const doc = {
@@ -375,19 +352,7 @@ const ChatBot = ({
         },
       };
 
-      console.log("[bot-log] logging event:", doc);
-      // Firestore path: canvases/{canvasId}/bot_logs
-      // const col = collection(db, String(safeCanvasId || "unknown"), "bot_logs");
-      // const col = collection(
-      //   db,
-      //   "classrooms",
-      //   canvasId || "unknown",
-      //   "bot_logs"
-      // );
-
-      // const canvasDocId = toFirestoreDocId(canvasId);
-      // const col = collection(db, "canvases", canvasDocId, "bot_logs");
-
+      // Firestore path: classrooms/{classroom}/Projects/{project}/teams/{team}/bot_logs
       const flatId = String(canvasId || "unknown");
       const parts = flatId.split("_");
       const classroom = parts[0] || "unknown";
@@ -407,8 +372,8 @@ const ChatBot = ({
 
       await addDoc(col, doc);
     } catch (e) {
-      // Don’t break UX if logging fails
-      console.warn("[bot-log] failed:", e);
+      // Don't break UX if logging fails
+      console.error("[bot-log] failed:", e);
     }
   };
 
@@ -452,7 +417,7 @@ const ChatBot = ({
   const NUDGE_NOTIFY_COOLDOWN_MS = 45_000; // adjust
 
   const notifyUser = (text) => {
-    // Option A: push a small bot “system” message (simple & reliable)
+    // Option A: push a small bot "system" message (simple & reliable)
     setMessages((prev) => [
       ...prev,
       { sender: "bot", text: `🔔 ${text}`, type: "system" },
@@ -536,7 +501,6 @@ const ChatBot = ({
 
   useEffect(() => {
     if (externalMessages && externalMessages.length > 0) {
-      // setIsOpen(true);
       setMessages((prev) => [...prev, ...externalMessages]);
     }
   }, [externalMessages, setMessages]);
@@ -582,7 +546,7 @@ const ChatBot = ({
         lastExternalTriggerRef.current = { key: dedupeKey, time: now };
       }
 
-      // ---- clip notes logic (keep yours) ----
+      // ---- clip notes logic ----
       setClipNotes((prev) => {
         const next = [...prev];
 
@@ -614,10 +578,6 @@ const ChatBot = ({
         return next;
       });
 
-      // ✅ NEW: actually push a message that contains chips
-      // const resolvedType = String(roleType || type || "nudge").toLowerCase();
-      // const resolvedChips = Array.isArray(chips) ? chips : [];
-
       const resolvedType = String(
         roleType || type || meta?.role || meta?.trigger?.role || "nudge"
       ).toLowerCase();
@@ -632,13 +592,6 @@ const ChatBot = ({
           : [];
 
       // choose message text priority: explicit text > snippet note > fallback
-      // const messageText =
-      //   typeof text === "string" && text.trim()
-      //     ? text.trim()
-      //     : snippet
-      //     ? `💡 Selection sent to AI:\n${snippet}`
-      //     : "💡 Selection received.";
-
       const messageText =
         (typeof text === "string" && text.trim() ? text.trim() : "") ||
         (typeof meta?.nudgeText === "string" && meta.nudgeText.trim()
@@ -666,13 +619,12 @@ const ChatBot = ({
 
       if (resolvedPhase) {
         const theme = getPhaseTheme(resolvedPhase);
-        // setPhaseTheme(theme);
         setShellThemeTemporarily(theme, 30_000);
       }
 
       const theme = resolvedPhase ? getPhaseTheme(resolvedPhase) : "neutral";
 
-      // ✅ Log: proactive nudge appeared in chat
+      // Log: proactive nudge appeared in chat
       await logBotEvent("proactive_nudge_shown", {
         role: resolvedType,
         phase: resolvedPhase || null,
@@ -719,8 +671,6 @@ const ChatBot = ({
   }, [forceOpen]);
 
   const handleChipClick = async (chip, roleType, nudgeMsg) => {
-    console.log("Chip clicked with nudgeMsg:", { chip, roleType, nudgeMsg });
-
     await logBotEvent("chip_click", {
       chip: redactText(chip, 300),
       role: String(roleType || "").toLowerCase(),
@@ -786,7 +736,6 @@ const ChatBot = ({
         windowIds: meta.windowIds || [],
         tailShapeIds,
         text_snippets: dedupe(textSnips),
-        // image_urls: dedupe(imageUrls),
         source: meta.source || "phase_nudge",
       };
     } catch (e) {
@@ -798,23 +747,7 @@ const ChatBot = ({
       ? nudgeMsg.meta.tailShapeIds
       : [];
 
-    console.log("Sending /act payload:", {
-      chip,
-      canvas_id: canvasId,
-      role: roleType || "catalyst",
-      user_id,
-      targets,
-      params: {
-        ...(params || {}),
-        nudge_context: nudgeContext,
-      },
-    });
-
-    const newMessages = [
-      ...messages,
-      { sender: "user", text: chip },
-      // { sender: "bot", text: `🔧 Running action: ${chip}` },
-    ];
+    const newMessages = [...messages, { sender: "user", text: chip }];
     setMessages(newMessages);
     setLoading(true);
 
@@ -836,12 +769,10 @@ const ChatBot = ({
             targets: inferredTargets.length ? inferredTargets : targets || [],
             params: {
               ...(params || {}),
-              // helpful top-level keys
               phase: nudgeContext?.phase || null,
               triggerId: nudgeContext?.triggerId || null,
               tailShapeIds: nudgeContext?.tailShapeIds || [],
               windowIds: nudgeContext?.windowIds || [],
-              // full context blob
               nudge_context: nudgeContext,
             },
           }),
@@ -849,7 +780,6 @@ const ChatBot = ({
       );
 
       const data = await response.json();
-      console.log(`---/act data---`, data);
 
       if (data.error) {
         setMessages([
@@ -881,28 +811,10 @@ const ChatBot = ({
         }
       }
 
-      console.log(`Bot Reply (raw):`, result?.output?.[0]?.content);
-
-      // const botReply = formatBotReply(
-      //   result?.outputs?.find((o) => o?.type === "summary")?.content ??
-      //     result?.output?.[0]?.content ??
-      //     "Action completed."
-      // );
       const primaryOutput =
-        // 1) prefer summary if present
-        // result?.outputs?.find((o) => o?.type === "summary")?.content ??
-        // 2) otherwise take first output content (covers contrarian_ideas, etc.)
-        result?.outputs?.[0]?.content ??
-        // 3) last fallback
-        "Action completed.";
+        result?.outputs?.[0]?.content ?? "Action completed.";
 
       const botReply = formatBotReply(primaryOutput);
-
-      // console.log(
-      //   "[images] raw b64 count:",
-      //   Array.isArray(b64s) ? b64s.length : 0
-      // );
-      console.log("[images] firebaseUrls:", firebaseUrls);
 
       setMessages([
         ...newMessages,
@@ -940,20 +852,6 @@ const ChatBot = ({
     inFlight: false,
   });
 
-  // useEffect(() => {
-  //   if (!shapes || shapes.length === 0) return;
-
-  //   const now = Date.now();
-  //   const last = lastAnalyzeRef.current;
-  //   const elapsed = last.time ? now - last.time : Infinity;
-  //   const deltaMoves = shapes.length - (last.moveCount || 0);
-
-  //   const shouldCall = elapsed >= 30_000 || deltaMoves >= 8;
-  //   if (!shouldCall) return;
-
-  //   runAnalyzeNudge("auto");
-  // }, [shapes]);
-
   const runAnalyzeNudge = async (source = "auto") => {
     if (!shapes || !Array.isArray(shapes) || shapes.length === 0) return;
 
@@ -970,14 +868,13 @@ const ChatBot = ({
       inFlight: false,
     };
 
-    // 🔁 HYBRID TRIGGER (Option C) — only for auto mode
+    // HYBRID TRIGGER — only for auto mode
     if (source === "auto") {
       const elapsed = now - (last.time || 0); // ms
       const moveDelta = shapes.length - (last.moveCount || 0);
 
       // If not enough time and not enough new moves, skip
       if (elapsed < 30_000 && moveDelta < 6) {
-        // console.log("[nudge] auto: skipping (elapsed, moveDelta) = ", elapsed, moveDelta);
         return;
       }
     }
@@ -987,7 +884,7 @@ const ChatBot = ({
     lastAnalyzeRef.current.inFlight = true;
     setNudgesLoading(true);
 
-    // Only show “Analyzing…” if the user explicitly clicked
+    // Only show "Analyzing…" if the user explicitly clicked
     if (source === "button") {
       setMessages((prev) => [
         ...prev,
@@ -1001,8 +898,6 @@ const ChatBot = ({
     const episodeId = canvasId || "TeamRoadTrip";
 
     try {
-      // const res = await fetch("http://127.0.0.1:8060/analyze", {
-      // const res = await fetch("http://167.96.111.150:8060/analyze", {
       const res = await fetch(
         "https://prediction-backend-g5x7odgpiq-uc.a.run.app/analyze",
         {
@@ -1013,13 +908,12 @@ const ChatBot = ({
             shapes: shapes,
             window_sec: 15,
             min_link: 0.5,
-            tail_window_count: 6, // ⬅️ match backend default
+            tail_window_count: 6, // match backend default
           }),
         }
       );
 
       const data = await res.json();
-      console.log("[/analyze] response:", data);
 
       if (!res.ok || data.error) {
         setMessages((prev) => [
@@ -1043,22 +937,20 @@ const ChatBot = ({
         ? data.tail_shape_ids
         : [];
 
-      console.log("TAIL IDS FROM BACKEND:", tailShapeIds);
-
       if (!windows.length || !current_phase) {
         if (source === "button") {
           setMessages((prev) => [
             ...prev,
             {
               sender: "bot",
-              text: "I couldn’t detect any stable windows of activity yet. Try working on the canvas a bit more first.",
+              text: "I couldn't detect any stable windows of activity yet. Try working on the canvas a bit more first.",
             },
           ]);
         }
         return;
       }
 
-      // 🔐 PHASE CONFIDENCE + STABILITY GATING (Option D-ish)
+      // PHASE CONFIDENCE + STABILITY GATING
       const phase =
         current_phase.current_phase_dc ||
         current_phase.current_phase_full ||
@@ -1113,10 +1005,6 @@ const ChatBot = ({
 
       // For auto mode: if not stable or not confident, silently skip
       if (source === "auto" && (!stablePhase || !confidenceHigh)) {
-        console.log(
-          "[nudge] auto: skipping due to unstable/low-confidence phase",
-          { phase, meanConf, stablePhase, majorityPhase, phaseDcList }
-        );
         return;
       }
 
@@ -1131,7 +1019,7 @@ const ChatBot = ({
         tailShapeIdsCount: tailShapeIds.length,
       });
 
-      // For button mode: tell the user if it’s too noisy
+      // For button mode: tell the user if it's too noisy
       if (source === "button" && (!stablePhase || !confidenceHigh)) {
         setMessages((prev) => [
           ...prev,
@@ -1148,23 +1036,14 @@ const ChatBot = ({
       const confPct = meanConf !== null ? (meanConf * 100).toFixed(1) : null;
       const phaseNice = phase[0].toUpperCase() + phase.slice(1);
 
-      // const phaseLine = confPct
-      //   ? `Current phase (last ${current_phase.window_ids.length} windows): **${phaseNice}** (confidence ~${confPct}%).`
-      //   : `Current phase (last ${current_phase.window_ids.length} windows): **${phaseNice}**.`;
-
       const phaseLine = confPct
-        ? `I’m pretty sure you’re in a ${phaseNice.toLowerCase()} phase (about ${confPct}% confident).`
-        : `It looks like you’re in a ${phaseNice.toLowerCase()} phase.`;
-
-      // let nudgeText = "";
-      // let chips = [];
-      // let nudgeType = "nudge";
+        ? `I'm pretty sure you're in a ${phaseNice.toLowerCase()} phase (about ${confPct}% confident).`
+        : `It looks like you're in a ${phaseNice.toLowerCase()} phase.`;
 
       const phaseThemeValue = getPhaseTheme(phase);
-      // setPhaseTheme(phaseThemeValue);
       setShellThemeTemporarily(phaseThemeValue, 30_000);
 
-      // 🔗 let parent know which shapes were in the tail windows
+      // let parent know which shapes were in the tail windows
       if (typeof onNudgeComputed === "function") {
         onNudgeComputed({
           currentPhase: current_phase,
@@ -1185,25 +1064,19 @@ const ChatBot = ({
       const nowTs = Date.now();
       const lastN = lastNotifiedRef.current || { triggerId: null, time: 0 };
 
-      console.log("[trigger] :", trigger);
-
       const triggerId = trigger?.id || null;
-      console.log("[nudge] triggerId:", triggerId);
       if (trigger?.id && typeof onTriggerFired === "function") {
-        // props.onTriggerFired(trigger.id);
         onTriggerFired(trigger.id);
       }
       const isTriggerHit = !!triggerId;
 
       // Notify rules:
       // - If user clicked the bolt: optional short notice (not necessary, but ok)
-      // - If auto: notify only when a trigger hits AND we haven’t notified recently for same trigger
+      // - If auto: notify only when a trigger hits AND we haven't notified recently for same trigger
       let shouldNotify = false;
 
       if (source === "button") {
-        // optional: you can skip this since user requested it
-        // shouldNotify = isTriggerHit; // or true if you want always
-        shouldNotify = true; // or true if you want always
+        shouldNotify = true;
       } else {
         // auto
         if (isTriggerHit) {
@@ -1219,18 +1092,10 @@ const ChatBot = ({
 
       if (shouldNotify) {
         lastNotifiedRef.current = { triggerId, time: nowTs };
-
-        // Text for notification
-        const label = trigger?.label || triggerId || "a pattern";
-        // if (shouldNotify && triggerId && typeof onTriggerFired === "function") {
-        //   onTriggerFired(triggerId);
-        // }
-
-        // notifyUser(`Nudge triggered: ${label}`);
       }
       const msgTheme = getPhaseTheme(phase);
 
-      // ✅ Log: analyze nudge appeared in chat
+      // Log: analyze nudge appeared in chat
       await logBotEvent("nudge_shown", {
         source, // "auto" or "button"
         phase,
@@ -1287,20 +1152,12 @@ const ChatBot = ({
     }
   };
 
-  // const handleRequestNudges = () => runAnalyzeNudge("button");
-
   const handleRequestNudges = async () => {
     await logBotEvent("request_nudge_button", {
       shapesCount: shapes?.length || 0,
     });
     return runAnalyzeNudge("button");
   };
-
-  // const toggleNudgeExpand = (idx) => {
-  //   setMessages((prev) =>
-  //     prev.map((m, i) => (i === idx ? { ...m, expanded: !m.expanded } : m))
-  //   );
-  // };
 
   const toggleNudgeExpand = async (idx) => {
     const msg = messages?.[idx];
@@ -1349,10 +1206,8 @@ const ChatBot = ({
 
     const history = buildHistoryForBackend(newMessages);
 
-    console.log("New Messages:", newMessages);
     setMessages(newMessages);
     setUserInput("");
-    // setClipNotes([]);
     setLoading(true);
 
     try {
@@ -1372,7 +1227,6 @@ const ChatBot = ({
         return;
       }
 
-      // const response = await fetch("http://127.0.0.1:5000/api/chatgpt-helper", {
       const response = await fetch(
         "https://flask-app-jqwkqdscaq-uc.a.run.app/api/chatgpt-helper",
         {
@@ -1420,7 +1274,7 @@ const ChatBot = ({
       if (data.reply) {
         let imageUrlsFinal = [];
 
-        // 1) base64 route (your existing path)
+        // 1) base64 route
         const b64s = data.images_b64 || data.image_b64;
         if (Array.isArray(b64s) && b64s.length) {
           try {
@@ -1435,11 +1289,11 @@ const ChatBot = ({
           }
         }
 
-        // 2) URL route (✅ THIS is what your backend is sending)
+        // 2) URL route
         const urls = data.image_urls;
         if (!imageUrlsFinal.length && Array.isArray(urls) && urls.length) {
           try {
-            // optional: mirror to Firebase for durability + easier copying
+            // mirror to Firebase for durability + easier copying
             const firebaseUrls = await mirrorAllImagesToFirebase(urls, {
               canvasId,
               user_id,
@@ -1477,7 +1331,6 @@ const ChatBot = ({
     }
   };
 
-  // put near top of component
   const toLines = (val) => {
     if (val === null || val === undefined) return [];
     if (typeof val === "string") return val.split("\n");
@@ -1501,14 +1354,13 @@ const ChatBot = ({
     const str = String(text ?? "");
     const nodes = [];
 
-    // (label)(https://url)  <-- YOUR CURRENT FORMAT
+    // (label)(https://url)  <-- current format
     const parenLinkRe = /\(([^)]+)\)\((https?:\/\/[^\s)]+)\)/g;
 
     // [label](https://url)  <-- markdown format
     const mdLinkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
 
     // bare https://url
-    // const urlRe = /(https?:\/\/[^\s<>()]+[^\s<>().,!?;:"')\]])/g;
     const urlRe = /((?:https?:\/\/|www\.)[^\s<>()]+[^\s<>().,!?;:"')\]])/g;
 
     // 1) tokenize (label)(url) first
@@ -1617,19 +1469,6 @@ const ChatBot = ({
     let codeBuf = [];
     let listBuf = [];
 
-    // const flushList = () => {
-    //   if (!listBuf.length) return;
-
-    //   out.push(
-    //     <ul key={`list-${out.length}`} className="chatbot-list">
-    //       {listBuf.map((li, idx) => (
-    //         <li key={idx}>{li}</li>
-    //       ))}
-    //     </ul>
-    //   );
-    //   listBuf = [];
-    // };
-
     const flushList = () => {
       if (!listBuf.length) return;
 
@@ -1697,7 +1536,6 @@ const ChatBot = ({
 
       out.push(
         <p key={`p-${i}`} className="chatbot-paragraph">
-          {/* {line} */}
           {renderRichInline(line, `p-${i}`)}
         </p>
       );
@@ -1749,9 +1587,6 @@ const ChatBot = ({
   };
 
   // Helpers to classify and gather context from clipNotes
-  // const isImageLike = (val) =>
-  //   typeof val === "string" &&
-  //   (/^data:image\//i.test(val) || /^https?:\/\//i.test(val));
   // Only treat real URLs as images for backend context
   const isImageLike = (val) =>
     typeof val === "string" && /^https?:\/\//i.test(val);
@@ -1770,68 +1605,41 @@ const ChatBot = ({
   };
 
   const gatherContextFromClips = (clips) => {
-    console.group("[gatherContextFromClips] START");
-
     if (!Array.isArray(clips)) {
-      console.log("[gatherContextFromClips] clips is not an array:", clips);
-      console.groupEnd();
       return { images: [], texts: [] };
     }
 
     const images = [];
     const texts = [];
 
-    clips.forEach((c, index) => {
-      console.log(`\n---- Clip #${index} ----`);
-      console.log("Full clip object:", c);
-
+    clips.forEach((c) => {
       const snip = c?.snip;
-      const kind = c?.kind;
 
-      console.log("kind:", kind);
-      console.log("snip:", snip);
-
-      if (!snip) {
-        console.log("Skipping clip — snip is empty or null");
-        return;
-      }
+      if (!snip) return;
 
       // 1. Hosted HTTPS image?
       if (typeof snip === "string" && /^https?:\/\//i.test(snip)) {
-        console.log("➡️ Detected HTTPS image URL → pushing to images:", snip);
         images.push(snip);
         return;
       }
 
       // 2. Base64 data URL?
       if (typeof snip === "string" && snip.startsWith("data:image/")) {
-        console.log(
-          "➡️ Detected data:image (base64) → NOT sending, adding marker text"
-        );
         texts.push("[canvas image selected]");
         return;
       }
 
       // 3. Anything else → treat as text
       if (typeof snip === "string" && snip.trim()) {
-        console.log("➡️ Detected normal text → pushing:", snip.trim());
         texts.push(snip.trim());
         return;
       }
-
-      console.log("❓ snip exists but did not match any rule:", snip);
     });
 
     const ctx = {
       images: dedupeBy(images, (x) => x),
       texts: dedupeBy(texts, (x) => x),
     };
-
-    console.log("\n===== FINAL CONTEXT SENT TO BACKEND =====");
-    console.log("Images:", ctx.images);
-    console.log("Texts:", ctx.texts);
-
-    console.groupEnd();
 
     return ctx;
   };
@@ -1937,7 +1745,6 @@ const ChatBot = ({
 
             <button
               className="chatbot-header-btn"
-              // onClick={() => setIsOpen(false)}
               onClick={() => {
                 logBotEvent("bot_close", { variant });
                 if (variant === "floating") {
@@ -1973,29 +1780,12 @@ const ChatBot = ({
             const msgPhaseTheme = msgPhase
               ? getPhaseTheme(msgPhase)
               : "neutral";
-            // const msgTheme = msgPhase ? getPhaseTheme(msgPhase) : "neutral";
             const msgTheme =
               msg.meta?.phaseTheme ||
               (msg.meta?.phase ? getPhaseTheme(msg.meta.phase) : "neutral");
 
             const isPhaseScopedNudge = isNudgeLike && !!msgPhase;
             const forceVisible = !!msg.meta?.forceVisible;
-
-            // const isPhaseVisible =
-            //   forceVisible ||
-            //   !isPhaseScopedNudge ||
-            //   msgPhaseTheme === "neutral" ||
-            //   msgPhaseTheme === phaseTheme;
-
-            // if (!isPhaseVisible) {
-            //   return null;
-            // }
-
-            // const isNudgeLike =
-            //   msg.type &&
-            //   ["nudge", "provocateur", "communicator", "catalyst"].includes(
-            //     msg.type
-            //   );
 
             const isExpanded = !isNudgeLike || msg.expanded !== false;
             const lines = toLines(msg.text);
@@ -2084,9 +1874,6 @@ const ChatBot = ({
                       <button
                         className="chatbot-copy-btn"
                         title="Copy reply"
-                        // onClick={() =>
-                        //   copyText(toLines(msg.text).join("\n"), `msg-${idx}`)
-                        // }
                         onClick={() =>
                           copySelectedOrAll(
                             toLines(msg.text).join("\n"),
@@ -2101,14 +1888,6 @@ const ChatBot = ({
                       <span className="chatbot-copied-pill">Copied</span>
                     )}
 
-                    {/* <div className="chatbot-message-body">
-                      {toLines(msg.text).map((line, i) => (
-                        <ul key={i} style={{ margin: 0 }}>
-                          {line}
-                        </ul>
-                      ))}
-                    </div> */}
-
                     <div className="chatbot-message-body chatbot-card">
                       {renderMessageText(msg.text)}
                     </div>
@@ -2121,12 +1900,6 @@ const ChatBot = ({
                         <SimpleLinkPreview url={msg.previewUrl} />
                       </div>
                     )}
-
-                    {/* {msg.type && (
-                      <div className="chatbot-nudge-type">
-                        <strong>Type:</strong> {msg.type}
-                      </div>
-                    )} */}
 
                     {msg.chips && msg.chips.length > 0 && (
                       <div className="chatbot-nudge-chips">
@@ -2253,7 +2026,7 @@ const ChatBot = ({
             );
           })}
 
-          {/* NEW: toggle selection mode */}
+          {/* Toggle selection mode */}
           <div
             className={`chatbot-clip-box add-box ${
               isSelectingFromCanvas ? "active" : ""
