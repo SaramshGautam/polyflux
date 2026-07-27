@@ -79,6 +79,7 @@ import SessionSpeechCapture from "./whiteboard/SessionSpeechCapture";
 import CanvasPortal from "./canvashelpers/CanvasPortal";
 import PortalSuckOverlay from "./PortalSuckOverlay";
 import { restoreShapeMetadata } from "../utils/registershapes";
+import { logAction } from "../utils/actionLog";
 
 import {
   resolveImageUrl,
@@ -90,6 +91,22 @@ import { useProactiveNudges } from "./whiteboard/UseProactiveNudge";
 
 const CUSTOM_TOOLS = [MicrophoneTool];
 const BINDING_UTILS = [...defaultBindingUtils];
+
+// Given a page-space rect (the view CanvasPortal's preview was showing —
+// see its mapScreenPointToWorld/getVisibleWorldRect) and a viewport's
+// screen pixel size, returns the camera that fits that rect centered in
+// that viewport. Same math as ViewerPortal's cameraFromViewport, just
+// starting from a rect instead of another editor's live camera+viewport.
+function cameraToFitWorldRect(rect, viewW, viewH) {
+  const worldW = Math.max(1, rect.maxX - rect.minX);
+  const worldH = Math.max(1, rect.maxY - rect.minY);
+  const centerX = rect.minX + worldW / 2;
+  const centerY = rect.minY + worldH / 2;
+  const zFit = Math.min(viewW / worldW, viewH / worldH);
+  const x = viewW / (2 * zFit) - centerX;
+  const y = viewH / (2 * zFit) - centerY;
+  return { x, y, z: zFit };
+}
 
 function useCameraPresence(
   editorRef,
@@ -471,6 +488,28 @@ const CollaborativeWhiteboard = () => {
   const [isPortalDropReady, setIsPortalDropReady] = useState(false);
 
   const pendingPublishShapesRef = useRef(null);
+  // The offscreen preview editor CanvasPortal keeps mounted against whichever
+  // store ISN'T currently visible (see its `otherStore`/usePreviewImage).
+  // Publishing across the portal writes shapes straight into this editor
+  // instead of switching canvasMode, since a drop should move shapes to the
+  // other space without changing which canvas the user is looking at.
+  const otherEditorRef = useRef(null);
+  const handleOtherEditorMount = useCallback((editor) => {
+    otherEditorRef.current = editor;
+  }, []);
+
+  // Imperative handle exposed by CanvasPortal (mapScreenPointToWorld /
+  // getVisibleWorldRect) — lets us convert a screen point inside the
+  // portal's zoomed/panned preview into a real page-space point on the
+  // OTHER canvas, for both drop-to-publish landing position and the
+  // switch-over camera below.
+  const canvasPortalRef = useRef(null);
+
+  // Stashed by handlePortalToggle when CanvasPortal hands us a landing
+  // rect at double-click time; consumed once by the next <Tldraw onMount>
+  // (which is exactly when canvasMode's remount lands us on the new side).
+  const pendingCameraLandingRef = useRef(null);
+
   const pointerScreenRef = useRef({ x: 0, y: 0 });
   const dragGhostElRef = useRef(null);
   const dragGhostImgUrlRef = useRef(null);
@@ -801,7 +840,18 @@ const CollaborativeWhiteboard = () => {
     [revertRobotToDefault]
   );
 
-  const handlePortalToggle = useCallback(() => {
+  const handlePortalToggle = useCallback((landing) => {
+    // Stash whatever view CanvasPortal was showing (or null, if it
+    // couldn't compute one) so the next <Tldraw onMount> — which is
+    // exactly the remount that lands us on the new canvasMode — can
+    // point its camera there instead of the default view.
+    pendingCameraLandingRef.current = landing || null;
+
+    // Note: the switch itself is deliberately NOT logged to action
+    // history — publishing a shape across the portal already shows up
+    // there (see publishSelectionAcrossPortal), and just flipping which
+    // canvas you're looking at isn't a meaningful history event on its
+    // own.
     setCanvasMode((prev) => (prev === "public" ? "private" : "public"));
   }, []);
 
@@ -895,6 +945,19 @@ const CollaborativeWhiteboard = () => {
         ? (selBoundsForLayout.minY + selBoundsForLayout.maxY) / 2
         : shapes[0]?.y ?? 0;
 
+      // Where the drop is actually happening, mapped through the portal's
+      // own zoom/pan back to a real page-space point on the destination
+      // canvas — this is what makes a drop land where you dropped it
+      // *inside the preview*, instead of always recentering on whatever
+      // that canvas's own (unrelated) viewport happens to be looking at.
+      // Captured now, at publish time, since pointerScreenRef reflects the
+      // live cursor position and CanvasPortal's pan/zoom state could shift
+      // between now and whenever a queued fallback (below) gets consumed.
+      const dropWorldPoint = canvasPortalRef.current?.mapScreenPointToWorld(
+        pointerScreenRef.current.x,
+        pointerScreenRef.current.y
+      );
+
       // Snapshot each shape's CURRENT Firestore metadata before touching
       // anything. If something else in the app deletes the Firestore doc
       // in response to editor.deleteShapes() below (a generic "shape
@@ -936,6 +999,23 @@ const CollaborativeWhiteboard = () => {
         );
       }
 
+      // Resolve the shape's creator to a display label using the same
+      // precedence NamedShapeUtils' own getName() falls back through:
+      // the just-snapshotted Firestore doc (freshest, and the whole
+      // reason firestoreMetaByShapeId exists), then the live
+      // shapeId->actor map, then whatever was already stamped on the
+      // shape itself. Resolved to a friendly label via actorLabelByIdRef
+      // where possible, falling back to the raw id/name.
+      const resolveCreatorLabel = (shape) => {
+        const actorId =
+          firestoreMetaByShapeId[shape.id]?.createdBy ||
+          shapeActorIdByShapeIdRef.current?.[shape.id] ||
+          shape?.meta?.createdBy ||
+          null;
+        if (!actorId) return shape?.meta?.createdByName || null;
+        return actorLabelByIdRef.current?.[actorId] || actorId;
+      };
+
       const preparedShapes = shapes.map((shape) => ({
         ...shape,
         // Reusing the ORIGINAL id instead of minting a new one with
@@ -950,8 +1030,59 @@ const CollaborativeWhiteboard = () => {
           publishedFromPortal: true,
           publishedFromMode: sourceMode,
           publishedAt: Date.now(),
+          // Stamped directly on the shape record itself (not left to
+          // rely solely on the separate Firestore "shapes" doc) so the
+          // creator name tag (NamedShapeUtils' <WithNameTag>) survives
+          // even if that doc's restore-after-publish below loses its race
+          // with the delete-triggered Firestore cleanup that fires when
+          // the shape is removed from the source canvas — both are
+          // independent, unsequenced async writes to the same doc, and
+          // previously only the Firestore copy carried this, so a
+          // same-shape-id doc has a real gap where the tag can show
+          // "Unknown".
+          createdByName: resolveCreatorLabel(shape),
         },
       }));
+
+      // Record the publish in action history / Firestore now — the
+      // shapes ARE going to land on destinationMode one way or another
+      // (either straight away below, or via the queued fallback), so
+      // there's no need to wait on which path actually wrote them.
+      //
+      // "brought over" + shapeType embedding "from the <source> canvas"
+      // reads naturally once the fixed "<who> <verb> <a/an> <shapeType>"
+      // history-row template fills in the article — e.g. "Alice brought
+      // over a note from the private canvas". Embedding the source in
+      // shapeType (rather than appending it separately, which the row
+      // template has no slot for) is safe for HistoryPanel's icon lookup
+      // too, since that checks the verb ("brought over") for the publish
+      // category before ever falling back to matching shapeType exactly
+      // against "note"/"image"/"text".
+      //
+      // actorId here deliberately prefers displayName over the raw uid —
+      // currentUserId (used elsewhere for room ids/presence, where the
+      // stable uid is actually what's wanted) put uid first, which is why
+      // published entries were showing a raw Firebase id instead of a
+      // name; every other logAction call in this app (CustomContextMenu,
+      // CommentBox, etc.) already prioritizes displayName the same way.
+      const publisherName = auth.currentUser?.displayName || currentUserId;
+      shapes.forEach((shape) => {
+        logAction({
+          className,
+          projectName,
+          teamName,
+          actorId: publisherName,
+          actorUid: auth.currentUser?.uid || null,
+          verb: "brought over",
+          shapeId: shape.id,
+          shapeType: `${shape.type} from the ${sourceMode} canvas`,
+          textPreview: extractShapeText(shape),
+          imageUrl:
+            shape.type === "image" ? resolveImageUrl(editor, shape) || "" : "",
+        }).catch((err) =>
+          console.error("[portal] failed to log publish action:", err)
+        );
+      });
 
       // Snapshot the selection as an image + capture its on-screen rect
       // BEFORE deleting anything, so the fly-into-the-portal clone is an
@@ -1006,14 +1137,117 @@ const CollaborativeWhiteboard = () => {
       // over visually at the exact same screen position, so there's no
       // visible pop between "real shape" and "flying clone."
       editor.deleteShapes(shapeIds);
-      pendingPublishShapesRef.current = {
-        shapes: preparedShapes,
-        groupCenterX,
-        groupCenterY,
-        firestoreMetaByShapeId,
-        destinationMode,
-      };
-      setCanvasMode(destinationMode);
+
+      // Write the shapes onto the DESTINATION canvas right away, using the
+      // portal's own offscreen preview editor — it's always mounted against
+      // whichever store isn't currently visible, i.e. exactly the
+      // destination. This is what lets a drop publish across WITHOUT
+      // switching which canvas is on screen; switching is now exclusively a
+      // double-click gesture on the portal (see CanvasPortal's expand
+      // overlay + handlePortalToggle).
+      const destEditor = otherEditorRef.current;
+      let wroteDirectly = false;
+
+      if (destEditor) {
+        try {
+          const targetPageId =
+            dropWorldPoint?.pageId || destEditor.getCurrentPageId?.();
+
+          // Prefer the actual drop position (mapped through the portal's
+          // preview); only fall back to "wherever that canvas's viewport
+          // happens to be" if the mapping wasn't available for some reason
+          // (e.g. the preview image hadn't loaded yet).
+          let destCenterX, destCenterY;
+          if (dropWorldPoint) {
+            destCenterX = dropWorldPoint.x;
+            destCenterY = dropWorldPoint.y;
+          } else {
+            const destBounds = destEditor.getViewportPageBounds();
+            destCenterX = (destBounds.minX + destBounds.maxX) / 2;
+            destCenterY = (destBounds.minY + destBounds.maxY) / 2;
+          }
+
+          const shapesToCreate = preparedShapes.map((s, index) => ({
+            ...s,
+            parentId: targetPageId || s.parentId,
+            x: destCenterX + (s.x - groupCenterX) + index * 4,
+            y: destCenterY + (s.y - groupCenterY) + index * 4,
+          }));
+
+          // This editor is deliberately read-only — CanvasPortal only uses
+          // it as a headless renderer for the ring's preview image, and
+          // createShapes silently no-ops in readonly mode. Lift it just
+          // long enough to write, then restore it exactly as it was.
+          const wasReadonly = destEditor.getIsReadonly?.();
+          if (wasReadonly) {
+            destEditor.updateInstanceState({ isReadonly: false });
+          }
+          destEditor.createShapes(shapesToCreate);
+          if (wasReadonly) {
+            destEditor.updateInstanceState({ isReadonly: true });
+          }
+
+          // Keep whatever just arrived visibly selected on that side, so
+          // it's obvious what landed and where the moment the user actually
+          // switches over there.
+          try {
+            destEditor.setSelectedShapes(shapesToCreate.map((s) => s.id));
+          } catch (err) {
+            console.error("[portal] failed to select published shapes:", err);
+          }
+
+          // Last-writer-wins repair pass, same as before: whatever
+          // Firestore state exists right now for these shapes gets
+          // overwritten with the metadata captured before the publish
+          // started, tagged as now living in the destination space.
+          if (Object.keys(firestoreMetaByShapeId).length) {
+            const restoreUserContext = {
+              className,
+              projectName,
+              teamName,
+              userId: currentUserId,
+            };
+            Object.entries(firestoreMetaByShapeId).forEach(
+              ([shapeId, meta]) => {
+                restoreShapeMetadata(shapeId, restoreUserContext, {
+                  ...meta,
+                  space: destinationMode,
+                }).catch((err) =>
+                  console.error(
+                    "[portal] failed to restore Firestore metadata for",
+                    shapeId,
+                    err
+                  )
+                );
+              }
+            );
+          }
+
+          wroteDirectly = true;
+        } catch (err) {
+          console.error(
+            "[portal] FAILED to create published shapes on destination canvas:",
+            err
+          );
+        }
+      }
+
+      // Fallback: the destination's offscreen preview editor wasn't mounted
+      // yet (e.g. the portal was still initializing). Queue the shapes —
+      // they'll be picked up the moment that canvas actually mounts, via
+      // the `queued?.destinationMode === canvasMode` check in the visible
+      // <Tldraw onMount>, whether that's this preview editor arriving late
+      // or the user double-clicking the portal to switch there directly.
+      if (!wroteDirectly) {
+        pendingPublishShapesRef.current = {
+          shapes: preparedShapes,
+          groupCenterX,
+          groupCenterY,
+          firestoreMetaByShapeId,
+          destinationMode,
+          dropWorldPoint,
+        };
+      }
 
       if (suckImgUrl && startRect) {
         const portalRect = getPortalRect();
@@ -1033,7 +1267,7 @@ const CollaborativeWhiteboard = () => {
         }
       }
     },
-    [canvasMode, getPortalRect]
+    [canvasMode, getPortalRect, className, projectName, teamName, currentUserId]
   );
 
   useEffect(() => {
@@ -1240,16 +1474,18 @@ const CollaborativeWhiteboard = () => {
     nudges: [],
   });
 
-  // Action history only makes sense on the public/shared canvas — a
-  // private canvas's edits are personal to that user, so there's nothing
-  // meaningful to show, and no reason to pay for a live Firestore listener
-  // while on that side.
+  // Live action history listener stays on for BOTH canvases now — private
+  // actions need to reach HistoryPanel's own filtering (space + actorUid)
+  // to show up while the user is actually in private mode. Gating this on
+  // isPublicMode used to unsubscribe (and clear actionHistory to []) the
+  // instant you switched to private, so private edits never populated the
+  // list at all, live or otherwise.
   const { actionHistory, setActionHistory, fetchActionHistory } =
     useCanvasActionHistory({
       className,
       projectName,
       teamName,
-      enabled: isPublicMode,
+      enabled: true,
     });
 
   useCameraPresence(editorInstance, {
@@ -2085,6 +2321,23 @@ const CollaborativeWhiteboard = () => {
     elapsedRef.current = elapsed;
   }, [elapsed]);
 
+  // tldrawComponents below is memoized with a [] dep array (recreating
+  // these component definitions on every canvasMode flip would remount
+  // tldraw's ContextMenu/InFrontOfTheCanvas slots), so canvasMode has to
+  // reach them the same way every other piece of live state does here —
+  // through a ref kept current via effect, read at call time via
+  // .current, rather than captured directly in the memo's closure (which
+  // would freeze it at whatever canvasMode was on first render — "public"
+  // — forever). This was the actual cause of private-canvas actions
+  // (notes, comments, reactions, deletes) being logged with space:
+  // "public": CustomContextMenu/ContextToolbarComponent never received a
+  // canvasMode prop at all, so it silently fell back to its "public"
+  // default no matter which canvas was actually active.
+  const canvasModeRef = useRef(canvasMode);
+  useEffect(() => {
+    canvasModeRef.current = canvasMode;
+  }, [canvasMode]);
+
   const analyzeFn = useCallback(
     async ({ source, signal }) => {
       if (source === "proactive") {
@@ -2219,8 +2472,8 @@ const CollaborativeWhiteboard = () => {
         };
 
         if (scope === "public") {
-          publishPublicNudge({ trigger, tailShapeIds, metrics }).catch(
-            (err) => console.error("[nudge] failed to publish public nudge:", err)
+          publishPublicNudge({ trigger, tailShapeIds, metrics }).catch((err) =>
+            console.error("[nudge] failed to publish public nudge:", err)
           );
         }
 
@@ -2366,6 +2619,7 @@ const CollaborativeWhiteboard = () => {
           setCommentCounts={setCommentCounts}
           onNudge={(msg) => handleNudgeFromContextMenuRef.current?.(msg)}
           onTargetsChange={setSelectedTargets}
+          canvasMode={canvasModeRef.current}
         />
       );
     };
@@ -2393,6 +2647,7 @@ const CollaborativeWhiteboard = () => {
             fetchActionHistory={() => fetchActionHistoryRef.current?.()}
             commentFocusShapeId={commentFocusShapeIdRef.current}
             onCommentFocusComputed={() => setCommentFocusShapeId(null)}
+            canvasMode={canvasModeRef.current}
           />
 
           <HoverActionBadge
@@ -2503,8 +2758,10 @@ const CollaborativeWhiteboard = () => {
     <>
       <Navbar isPublicCanvas={isPublicMode} />
       <div
-        className={`main-container ${phaseClass} ${
-          isPhasePulsing ? "phase-pulse" : ""
+        className={`main-container ${
+          isPublicMode
+            ? `${phaseClass} ${isPhasePulsing ? "phase-pulse" : ""}`
+            : "canvas-private"
         }`}
         style={{ position: "fixed", inset: 0 }}
       >
@@ -2522,6 +2779,35 @@ const CollaborativeWhiteboard = () => {
             onMount={(editor) => {
               editorInstance.current = editor;
               setEditorReady(true);
+
+              // Land on whatever view the user had zoomed/panned to inside
+              // the portal preview, instead of this canvas's default camera
+              // — consumed once, from whichever double-click switch (if
+              // any) triggered this remount. A plain mount (initial load,
+              // or a switch where CanvasPortal couldn't compute a rect)
+              // leaves this null and camera setup falls through to whatever
+              // else already runs here.
+              const landing = pendingCameraLandingRef.current;
+              pendingCameraLandingRef.current = null;
+              if (landing) {
+                try {
+                  if (
+                    landing.pageId &&
+                    landing.pageId !== editor.getCurrentPageId?.()
+                  ) {
+                    editor.setCurrentPage?.(landing.pageId);
+                  }
+                  const vsb = editor.getViewportScreenBounds?.();
+                  const viewW = vsb?.width || window.innerWidth;
+                  const viewH = vsb?.height || window.innerHeight;
+                  editor.setCamera(cameraToFitWorldRect(landing, viewW, viewH));
+                } catch (err) {
+                  console.error(
+                    "[portal] failed to land camera on switch-over view:",
+                    err
+                  );
+                }
+              }
 
               editor.registerExternalContentHandler(
                 "url",
@@ -2666,18 +2952,31 @@ const CollaborativeWhiteboard = () => {
               // flips, which remounts <Tldraw key={canvasMode}>), so we
               // only consume the queued shapes once we've actually landed
               // on the mode they were destined for.
-              if (queued?.destinationMode === canvasMode && queued?.shapes?.length) {
-                const targetPageId = editor.getCurrentPageId?.();
+              if (
+                queued?.destinationMode === canvasMode &&
+                queued?.shapes?.length
+              ) {
+                const targetPageId =
+                  queued.dropWorldPoint?.pageId || editor.getCurrentPageId?.();
 
-                // Anchor the group to THIS editor's own current viewport —
-                // wherever the person is actually looking on the
-                // destination canvas right now — instead of the source
-                // canvas's viewport (the earlier bug), while preserving
-                // each shape's original offset from the group's center so
-                // multi-shape selections keep their relative layout.
-                const destBounds = editor.getViewportPageBounds();
-                const destCenterX = (destBounds.minX + destBounds.maxX) / 2;
-                const destCenterY = (destBounds.minY + destBounds.maxY) / 2;
+                // Prefer the actual drop position captured at publish time
+                // (mapped through the portal's preview, same as the
+                // direct-write path above) so a queued/fallback publish
+                // still lands where it was dropped. Only fall back to
+                // "wherever this editor's own viewport is looking" — the
+                // previous behavior — if that mapping wasn't available,
+                // while still preserving each shape's original offset from
+                // the group's center so multi-shape selections keep their
+                // relative layout.
+                let destCenterX, destCenterY;
+                if (queued.dropWorldPoint) {
+                  destCenterX = queued.dropWorldPoint.x;
+                  destCenterY = queued.dropWorldPoint.y;
+                } else {
+                  const destBounds = editor.getViewportPageBounds();
+                  destCenterX = (destBounds.minX + destBounds.maxX) / 2;
+                  destCenterY = (destBounds.minY + destBounds.maxY) / 2;
+                }
 
                 const shapesToCreate = queued.shapes.map((s, index) => ({
                   ...s,
@@ -2751,6 +3050,7 @@ const CollaborativeWhiteboard = () => {
         </UserContext.Provider>
 
         <CanvasPortal
+          ref={canvasPortalRef}
           canvasMode={canvasMode}
           onToggle={handlePortalToggle}
           isDraggingSelection={isDraggingSelection}
@@ -2759,6 +3059,7 @@ const CollaborativeWhiteboard = () => {
           shapeUtils={shapeUtilsMemo}
           bindingUtils={BINDING_UTILS}
           arrivalPulse={portalArrivalPulse}
+          onOtherEditorMount={handleOtherEditorMount}
         />
 
         <PortalSuckOverlay
@@ -2802,27 +3103,35 @@ const CollaborativeWhiteboard = () => {
             right-click menu. That primitive mounts/unmounts its content
             and auto-dismisses on outside interaction by design, which a
             persistent panel doesn't want. As an ordinary sibling here, it
-            has its own independent lifecycle again. */}
-        <div className="panelContainerWrapper">
-          {isPanelCollapsed ? (
-            <ToggleExpandButton
-              isPanelCollapsed={isPanelCollapsed}
-              togglePanel={togglePanel}
-            />
-          ) : (
-            <HistoryCommentPanel
-              actionHistory={actionHistory}
-              comments={comments}
-              selectedShape={selectedShape}
-              isPanelCollapsed={isPanelCollapsed}
-              togglePanel={togglePanel}
-              onHistoryItemClick={handleHistoryItemClick}
-              isPublicCanvas={isPublicMode}
-              shapes={shapesForAnalysis}
-              onCommentItemClick={handleCommentItemClick}
-            />
-          )}
-        </div>
+            has its own independent lifecycle again.
+
+            The whole thing (collapsed toggle button included) is public-
+            canvas-only — the private canvas is a personal space with no
+            shared history or comment thread worth surfacing UI for, so
+            it's hidden entirely rather than just showing an empty state. */}
+        {isPublicMode && (
+          <div className="panelContainerWrapper">
+            {isPanelCollapsed ? (
+              <ToggleExpandButton
+                isPanelCollapsed={isPanelCollapsed}
+                togglePanel={togglePanel}
+              />
+            ) : (
+              <HistoryCommentPanel
+                actionHistory={actionHistory}
+                comments={comments}
+                selectedShape={selectedShape}
+                isPanelCollapsed={isPanelCollapsed}
+                togglePanel={togglePanel}
+                onHistoryItemClick={handleHistoryItemClick}
+                isPublicCanvas={isPublicMode}
+                currentUserUid={auth.currentUser?.uid || null}
+                shapes={shapesForAnalysis}
+                onCommentItemClick={handleCommentItemClick}
+              />
+            )}
+          </div>
+        )}
 
         {!showSidebar && (
           <ChatBot

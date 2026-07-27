@@ -15,11 +15,15 @@ const HistoryCommentPanel = ({
   // whichever shape a given comment belongs to and opens its comment box.
   shapes,
   onCommentItemClick,
-  // Action History only tracks the shared canvas — private-canvas edits
-  // are personal to that user and have nothing to show. Defaults true so
-  // this keeps working exactly as before for any caller that hasn't been
-  // updated to pass it yet.
+  // Which canvas is active — used to show that canvas's own slice of
+  // history (public canvas history when true, this user's own private
+  // canvas history when false). Defaults true so this keeps working
+  // exactly as before for any caller that hasn't been updated to pass it.
   isPublicCanvas = true,
+  // Needed to filter private-canvas history down to just this user's own
+  // entries — the underlying "actions" collection is shared by the whole
+  // team, not scoped per private-canvas owner.
+  currentUserUid = null,
 }) => {
   const [isViewingHistory, setIsViewingHistory] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(true);
@@ -58,18 +62,6 @@ const HistoryCommentPanel = ({
     });
   };
 
-  // If the canvas switches to private while History is open, land on
-  // Comments instead — History has nothing to show there, and
-  // ToggleButtonGroup itself will hide the button that would let someone
-  // switch back to it, so this is what keeps that transition from
-  // stranding the view on a tab with no way back.
-  useEffect(() => {
-    if (!isPublicCanvas && isViewingHistory) {
-      handleViewChange(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPublicCanvas]);
-
   useEffect(() => {
     requestAnimationFrame(() => {
       if (scrollRef.current) {
@@ -78,6 +70,16 @@ const HistoryCommentPanel = ({
       }
     });
   }, [isViewingHistory, actionHistory, comments]);
+
+  // Action History is hidden on the private canvas (its tab button
+  // disappears too — see ToggleButtonGroup), so force this back to
+  // Comments on switching there. Otherwise a user who was on the History
+  // tab in public mode would land on a blank/stuck view with no visible
+  // way to get back, since the tab that would flip isViewingHistory back
+  // no longer renders.
+  useEffect(() => {
+    if (!isPublicCanvas) setIsViewingHistory(false);
+  }, [isPublicCanvas]);
 
   return (
     <div className="panelContainer relative h-full flex flex-col">
@@ -99,7 +101,7 @@ const HistoryCommentPanel = ({
       {/* Scrollable Content */}
       <div
         ref={scrollRef}
-        className="panel-content overflow-y-auto flex-1 min-h-0 p-2 relative"
+        className="panel-content overflow-y-auto flex-1 min-h-0 relative"
         onScroll={handleScroll}
       >
         {isViewingHistory ? (
@@ -107,6 +109,7 @@ const HistoryCommentPanel = ({
             actionHistory={actionHistory}
             onHistoryItemClick={onHistoryItemClick}
             isPublicCanvas={isPublicCanvas}
+            currentUserUid={currentUserUid}
           />
         ) : (
           <CommentPanel

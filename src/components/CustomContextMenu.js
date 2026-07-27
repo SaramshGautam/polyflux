@@ -33,6 +33,10 @@ export default function CustomContextMenu({
   setCommentCounts,
   onNudge,
   onTargetsChange,
+  // Which canvas this menu is currently operating on ("public" | "private")
+  // — stamped onto every logAction call here so History can tell public
+  // and private actions apart, since the "actions" collection is shared.
+  canvasMode = "public",
   ...props
 }) {
   const editor = useEditor();
@@ -117,6 +121,7 @@ export default function CustomContextMenu({
       shapeType: shape.type,
       textPreview: entry.text || "",
       imageUrl: entry.imageUrl || "",
+      space: canvasMode,
     });
   }
 
@@ -284,11 +289,14 @@ export default function CustomContextMenu({
         shapeType: newShape.type,
         textPreview: entry.text || "",
         imageUrl: entry.imageUrl || "",
+        space: canvasMode,
       });
     };
 
-    const handleShapeDeletion = async (deletedShapeID) => {
-      if (!deletedShapeID) {
+    const handleShapeDeletion = async (removedRecord) => {
+      const deletedShapeId = removedRecord?.id;
+
+      if (!deletedShapeId) {
         console.error("Missing shape ID!");
         return;
       }
@@ -307,15 +315,26 @@ export default function CustomContextMenu({
         userId: actorId,
       };
 
-      await deleteShape(deletedShapeID.id, userContext);
+      await deleteShape(deletedShapeId, userContext);
 
-      const deleted = { id: deletedShapeID.id, type: "shape" };
+      // Use the removed record's own snapshot (it still carries its type
+      // and props even though the live shape is already gone from the
+      // editor) instead of collapsing every delete to a generic "shape".
+      // Without this, a deleted note/image/text showed up in history as
+      // "deleted a shape" — losing the modality info the History panel's
+      // icons and note/image previews rely on to tell delete actions apart.
+      const deleted = {
+        id: deletedShapeId,
+        type: removedRecord.type || "shape",
+        props: removedRecord.props || {},
+      };
 
-      await makeHistoryEntry({
+      const entry = await makeHistoryEntry({
         userId: actorId,
         verb: "deleted",
         shape: deleted,
         editor,
+        userContext,
       });
 
       await logAction({
@@ -325,9 +344,11 @@ export default function CustomContextMenu({
         actorId,
         actorUid,
         verb: "deleted",
-        shapeId: deletedShapeID.id,
-        shapeType: "shape",
-        textPreview: "",
+        shapeId: deletedShapeId,
+        shapeType: deleted.type,
+        textPreview: entry.text || "",
+        imageUrl: entry.imageUrl || "",
+        space: canvasMode,
       });
     };
 
@@ -369,7 +390,10 @@ export default function CustomContextMenu({
           rec?.kind === "shape";
         if (!isShapeRecord) continue;
 
-        handleShapeDeletion({ id: rec.id });
+        // Pass the whole removed record through, not just its id — it's
+        // the only place we still have the shape's type/props, since the
+        // live shape is already gone from the editor by this point.
+        handleShapeDeletion(rec);
       }
     });
 

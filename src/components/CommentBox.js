@@ -42,6 +42,10 @@ export default function CommentBox({
   onClose,
   setActionHistory,
   fetchActionHistory,
+  // Which canvas this comment is being left on ("public" | "private") —
+  // stamped onto the logAction call below so History can tell public and
+  // private actions apart, since the "actions" collection is shared.
+  canvasMode = "public",
 }) {
   const auth = getAuth();
   const user = auth.currentUser;
@@ -134,6 +138,7 @@ export default function CommentBox({
         shapeId: selectedShape.id,
         shapeType: selectedShape.type || "unknown",
         textPreview: commentText.trim(),
+        space: canvasMode,
       });
 
       fetchActionHistory?.({ className, projectName, teamName });

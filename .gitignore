@@ -42,6 +42,7 @@ interaction_logs.ipynb
 Agents/*
 ai-backend/
 base-backend/
+trigger_backend/
 src/ai/
 sync-server/
 test.py

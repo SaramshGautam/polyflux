@@ -17,6 +17,13 @@ export async function logAction({
   shapeType,
   textPreview = "",
   imageUrl = "",
+  // Which canvas ("public" | "private") this action happened on. The
+  // "actions" collection is one shared collection per team, not split per
+  // canvas, so this is the only thing that lets the History panel show
+  // only the actions that belong to whichever canvas is currently active.
+  // Defaults to "public" for any caller that hasn't been updated to pass
+  // it yet, matching this app's original (pre-private-canvas) behavior.
+  space = "public",
 }) {
   const uid = actorUid || actorId || "anon";
   const t = bucketTime(Date.now(), 1500);
@@ -50,6 +57,7 @@ export async function logAction({
       shapeType,
       textPreview,
       imageUrl,
+      space,
       createdAt: serverTimestamp(),
       clientTs: t,
     },

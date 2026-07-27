@@ -4,9 +4,19 @@ import React, {
   useMemo,
   useState,
   useCallback,
+  forwardRef,
+  useImperativeHandle,
 } from "react";
 import { Tldraw } from "tldraw";
 import "./CanvasPortal.css";
+
+// Same padding value passed to getSvgString/getSvg below — kept as a
+// constant so the world-bounds we compute for hit-testing (mapping a
+// screen point in the portal back to a page-space point on the other
+// canvas) matches the padding baked into the exported image exactly.
+// Mismatch here would mean clicking a point in the preview maps to a
+// slightly different page point than what's actually drawn there.
+const PREVIEW_EXPORT_PADDING = 16;
 
 // ---------------------------------------------------------------------------
 // Offscreen preview hook
@@ -20,10 +30,16 @@ import "./CanvasPortal.css";
 // which is trivial to clip into a circle and can never show tldraw's own
 // UI chrome, watermark, or camera drift.
 // ---------------------------------------------------------------------------
-function usePreviewImage(store) {
+function usePreviewImage(store, onEditorMount) {
   const editorRef = useRef(null);
   const debounceRef = useRef(null);
   const currentUrlRef = useRef(null);
+
+  // World-space bounds (+ which page) the current imgUrl was rendered
+  // from — a ref, not state, since nothing needs to re-render when it
+  // changes; it's only read on-demand when mapping a screen point in the
+  // portal back to a page-space point (drop-to-publish, switch landing).
+  const boundsRef = useRef(null);
 
   const [imgUrl, setImgUrl] = useState(null);
   const [hasShapes, setHasShapes] = useState(false);
@@ -92,7 +108,32 @@ function usePreviewImage(store) {
 
       if (!idsOnPage.length) {
         setImgUrl(null);
+        boundsRef.current = null;
         return;
+      }
+
+      // Union of every exported shape's page bounds, padded by the exact
+      // same amount passed to the SVG export below — this is the
+      // page-space rectangle the resulting image visually represents,
+      // which is what lets us later map a screen point inside the portal
+      // back to a real page-space point on the other canvas.
+      let contentBounds = null;
+      for (const id of idsOnPage) {
+        const b = editor.getShapePageBounds?.(id);
+        if (!b) continue;
+        contentBounds = contentBounds ? contentBounds.union(b) : b.clone();
+      }
+      if (contentBounds) {
+        const pad = PREVIEW_EXPORT_PADDING;
+        boundsRef.current = {
+          minX: contentBounds.x - pad,
+          minY: contentBounds.y - pad,
+          maxX: contentBounds.x + contentBounds.w + pad,
+          maxY: contentBounds.y + contentBounds.h + pad,
+          pageId: editor.getCurrentPageId?.(),
+        };
+      } else {
+        boundsRef.current = null;
       }
 
       const svgString = await exportSvg(editor, idsOnPage);
@@ -123,6 +164,13 @@ function usePreviewImage(store) {
       }
       refresh();
 
+      // Hand the live editor instance up to the parent — it's the only
+      // editor bound to the "other" (currently not-visible) canvas's store,
+      // so the parent reuses it to write shapes there directly (a drop no
+      // longer switches which canvas is on screen, so there's no OTHER
+      // mounted editor to write into).
+      onEditorMount?.(editor);
+
       const unlisten = editor.store?.listen(
         (entry) => {
           if (!entry?.changes) return;
@@ -135,9 +183,11 @@ function usePreviewImage(store) {
       return () => {
         clearTimeout(debounceRef.current);
         unlisten?.();
+        editorRef.current = null;
+        onEditorMount?.(null);
       };
     },
-    [refresh]
+    [refresh, onEditorMount]
   );
 
   // Clean up the last object URL when the store changes or we unmount.
@@ -150,7 +200,7 @@ function usePreviewImage(store) {
     };
   }, [store]);
 
-  return { imgUrl, hasShapes, handleHiddenMount };
+  return { imgUrl, hasShapes, handleHiddenMount, boundsRef };
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +222,12 @@ function usePreviewImage(store) {
 // `transform: scale()`, which the browser can animate smoothly on the
 // compositor without ever touching layout or the canvas's pixel buffer.
 // ---------------------------------------------------------------------------
-const RENDER_SIZE = 200; // fixed drawing resolution (== old "drag-ready" size)
+// Bumped from 200 to 300 (the new drag-ready target) so hover/drag-ready —
+// now bigger than before — are drawn at their own native resolution
+// instead of being upscaled past it. Dormant/arriving simply scale DOWN
+// from this, which always stays crisp; only scaling UP past RENDER_SIZE
+// would blur, and nothing does anymore.
+const RENDER_SIZE = 300; // fixed drawing resolution (== new "drag-ready" size)
 const HALF = RENDER_SIZE / 2;
 const INNER = Math.round(RENDER_SIZE * 0.42);
 const OUTER = Math.round(RENDER_SIZE * 0.485);
@@ -184,12 +239,16 @@ const TEXT_RADIUS = HALF + PADDING * 0.55;
 const WINDOW_DIAMETER = INNER * 2;
 
 // Target visual sizes, expressed as a fraction of RENDER_SIZE — this is what
-// used to be separate pixel values (88 / 130 / 180 / 200). Converting them to
-// scale factors lets a single CSS transform carry the whole animation.
+// used to be separate pixel values. Converting them to scale factors lets a
+// single CSS transform carry the whole animation.
+//
+// Hover/drag-ready bumped up (240->270, 250->300) so the portal reads as
+// noticeably bigger once it's active, not just barely. Hover bumped again,
+// 270->297 (+10%), per request — now sits just under drag-ready (300).
 const DORMANT_SCALE = 88 / RENDER_SIZE;
-const ARRIVING_SCALE = 130 / RENDER_SIZE;
-const HOVER_SCALE = 180 / RENDER_SIZE;
-const DRAG_READY_SCALE = 200 / RENDER_SIZE;
+const ARRIVING_SCALE = 260 / RENDER_SIZE;
+const HOVER_SCALE = 297 / RENDER_SIZE;
+const DRAG_READY_SCALE = 300 / RENDER_SIZE;
 
 // How "energized" the ring looks (line thickness, glow, spark visibility) —
 // eased continuously inside the draw loop rather than snapping with state,
@@ -199,6 +258,18 @@ const ACTIVITY_HOVER = 0.6;
 const ACTIVITY_DRAG_READY = 0.85;
 const ACTIVITY_ARRIVING = 1;
 const ACTIVITY_EASE = 0.08; // per-frame lerp factor
+
+// Switch (double-click) expand-overlay animation durations.
+// EXPAND slowed down (560->760) so the growth itself reads as the portal
+// smoothly taking over the screen rather than a quick snap to full-screen.
+// HOLD is new: previously "expanding" handed off to "fading" the instant it
+// finished, which meant the "Switching to ___" label — which only starts
+// fading in near the END of expand — was on screen at full opacity for
+// barely 50ms before it started fading back out. Holding at full-screen,
+// fully opaque, for a beat before fading gives it room to actually be read.
+const SWITCH_EXPAND_MS = 660; // ring -> full screen
+const SWITCH_HOLD_MS = 350; // full screen, label at full opacity, unmoving
+const SWITCH_FADE_MS = 420; // then fades out in place
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -210,20 +281,27 @@ const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const PUBLIC_THEME_COLOR = "#CE7E00";
 const PRIVATE_THEME_COLOR = "#14c8c8";
 
-const CanvasPortal = ({
-  canvasMode = "public",
-  onToggle,
-  isDragPublishReady = false,
-  isDraggingSelection = false,
-  // Pass the opposite canvas's store so we can preview it
-  otherStore = null,
-  shapeUtils = [],
-  bindingUtils = [],
-  // Bump this to any new value (e.g. Date.now()) to trigger a brief
-  // "arrival" flash on the ring — used as the payoff moment when a
-  // fly-into-the-portal animation finishes.
-  arrivalPulse = null,
-}) => {
+const CanvasPortal = forwardRef(function CanvasPortal(
+  {
+    canvasMode = "public",
+    onToggle,
+    isDragPublishReady = false,
+    isDraggingSelection = false,
+    // Pass the opposite canvas's store so we can preview it
+    otherStore = null,
+    shapeUtils = [],
+    bindingUtils = [],
+    // Bump this to any new value (e.g. Date.now()) to trigger a brief
+    // "arrival" flash on the ring — used as the payoff moment when a
+    // fly-into-the-portal animation finishes.
+    arrivalPulse = null,
+    // Called with the offscreen preview editor (bound to `otherStore`) once it
+    // mounts, and with `null` when it unmounts. Lets the parent write shapes
+    // directly into the not-currently-visible canvas without switching to it.
+    onOtherEditorMount = null,
+  },
+  ref
+) {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const tRef = useRef(0);
@@ -236,12 +314,43 @@ const CanvasPortal = ({
   const buttonRef = useRef(null);
   const lastPulseRef = useRef(arrivalPulse);
 
+  // Portal-window rect + the preview image's own natural pixel size — the
+  // two things needed, together with previewPan/previewZoom/boundsRef, to
+  // map a screen point inside the circle back to a page-space point on the
+  // OTHER canvas (used for drop-to-publish landing position and for the
+  // switch-over camera below).
+  const windowRef = useRef(null);
+  const imgNaturalSizeRef = useRef({ w: 1, h: 1 });
+
   // Click-and-drag panning of the preview image. isPanningRef tracks
   // whether a drag is currently in progress; panStartRef captures the
   // pointer position and pan offset at drag start so movement is computed
   // as a delta, not an absolute position.
   const isPanningRef = useRef(false);
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+
+  // Switch (double-click) animation: the portal expands from its ring
+  // position to cover the whole screen with a live preview of the
+  // destination canvas (white canvas background + the actual shapes on it,
+  // same as the real canvas), the actual canvasMode flip happens underneath
+  // once fully covered, and then the overlay simply fades out in place —
+  // it doesn't shrink back down, it just stops once it fills the screen.
+  //   "idle"      — no transition in progress
+  //   "start"     — overlay just mounted at the ring's exact size/position,
+  //                 no transition yet (one frame, so the browser has
+  //                 something to animate FROM)
+  //   "expanding" — animating from the ring up to full-screen
+  //   "holding"   — canvasMode has flipped; overlay sits full-screen,
+  //                 fully opaque and unmoving, giving the "Switching to
+  //                 ___" label a real beat to be read before it fades
+  //   "fading"    — overlay stays full-screen and fades out, revealing the
+  //                 real (already-switched) canvas underneath
+  const [switchPhase, setSwitchPhase] = useState("idle");
+  const [switchOrigin, setSwitchOrigin] = useState(null);
+  // Captured once at click time so the "Switching to ___" label never
+  // flickers mid-animation (canvasMode/isPublic itself flips partway
+  // through, right as "expanding" hands off to "fading").
+  const [switchDestinationMode, setSwitchDestinationMode] = useState(null);
 
   // Eased "how big" / "how energized" values, read every animation frame.
   // Kept as refs (not state) so easing never triggers a React re-render —
@@ -261,7 +370,136 @@ const CanvasPortal = ({
   const isPublic = canvasMode === "public";
   const portalActive = hovered || isDragPublishReady;
 
-  const { imgUrl, hasShapes, handleHiddenMount } = usePreviewImage(otherStore);
+  const { imgUrl, hasShapes, handleHiddenMount, boundsRef } = usePreviewImage(
+    otherStore,
+    onOtherEditorMount
+  );
+
+  // --- portal-screen-point -> other-canvas-page-point mapping -------------
+  //
+  // The preview <img> is rendered with `object-fit: contain` inside the
+  // WINDOW_DIAMETER box (letterboxing it if its aspect ratio doesn't match
+  // the box), and THEN the whole thing gets `transform: translate(pan)
+  // scale(zoom)` around the box's center. To go from a screen point back to
+  // a page-space point on the other canvas, both of those have to be
+  // undone in reverse order, then the result mapped through boundsRef
+  // (the page-space rectangle the image represents).
+  const mapScreenPointToWorld = useCallback(
+    (clientX, clientY) => {
+      const winEl = windowRef.current;
+      const bounds = boundsRef.current;
+      if (!winEl || !bounds) return null;
+
+      const rect = winEl.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+
+      const localX = clientX - rect.left;
+      const localY = clientY - rect.top;
+      const originX = rect.width / 2;
+      const originY = rect.height / 2;
+
+      // Undo `transform: translate(pan) scale(zoom)` (CSS applies scale
+      // first, around transform-origin, THEN translate) — so to invert:
+      // subtract the translate, then unscale around the origin.
+      const preX = originX + (localX - originX - previewPan.x) / previewZoom;
+      const preY = originY + (localY - originY - previewPan.y) / previewZoom;
+
+      // Undo `object-fit: contain` letterboxing.
+      const natural = imgNaturalSizeRef.current;
+      const fitScale = Math.min(
+        rect.width / natural.w,
+        rect.height / natural.h
+      );
+      const dispW = natural.w * fitScale;
+      const dispH = natural.h * fitScale;
+      const offsetX = (rect.width - dispW) / 2;
+      const offsetY = (rect.height - dispH) / 2;
+
+      const u = (preX - offsetX) / dispW;
+      const v = (preY - offsetY) / dispH;
+
+      return {
+        x: bounds.minX + u * (bounds.maxX - bounds.minX),
+        y: bounds.minY + v * (bounds.maxY - bounds.minY),
+        pageId: bounds.pageId,
+      };
+    },
+    [previewPan, previewZoom, boundsRef]
+  );
+
+  // The page-space rectangle currently visible inside the portal window,
+  // given the current pan/zoom — used to land the camera on the exact same
+  // view after a double-click switch, instead of resetting to a default.
+  const getVisibleWorldRect = useCallback(() => {
+    const winEl = windowRef.current;
+    if (!winEl) return null;
+    const rect = winEl.getBoundingClientRect();
+    const p1 = mapScreenPointToWorld(rect.left, rect.top);
+    const p2 = mapScreenPointToWorld(
+      rect.left + rect.width,
+      rect.top + rect.height
+    );
+    if (!p1 || !p2) return null;
+    return {
+      minX: Math.min(p1.x, p2.x),
+      minY: Math.min(p1.y, p2.y),
+      maxX: Math.max(p1.x, p2.x),
+      maxY: Math.max(p1.y, p2.y),
+      pageId: p1.pageId,
+    };
+  }, [mapScreenPointToWorld]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      mapScreenPointToWorld,
+      getVisibleWorldRect,
+    }),
+    [mapScreenPointToWorld, getVisibleWorldRect]
+  );
+
+  // Captured at double-click time (when previewPan/previewZoom reflect
+  // whatever the user was actually looking at) and consumed later, once
+  // the expand overlay finishes and onToggle actually flips canvasMode —
+  // by then the overlay itself may be mid-transition, so re-computing at
+  // that point isn't reliable; stashing it up front is.
+  const pendingLandingRef = useRef(null);
+
+  // Drives the expand-overlay phases in order. `onToggle` (the actual
+  // canvasMode flip) fires at the END of "expanding" — i.e. only once the
+  // overlay has fully covered the screen — so the remount of the real
+  // <Tldraw> underneath is never visible; the overlay's own live preview
+  // image is standing in for it the whole time.
+  useEffect(() => {
+    if (switchPhase === "start") {
+      // One rAF to let the browser paint the overlay at its starting
+      // (ring-sized) geometry with transitions off, THEN flip to
+      // "expanding" — same two-step trick PortalSuckOverlay uses to force a
+      // real paint boundary before a CSS transition is asked to animate.
+      const raf = requestAnimationFrame(() => setSwitchPhase("expanding"));
+      return () => cancelAnimationFrame(raf);
+    }
+    if (switchPhase === "expanding") {
+      const t = setTimeout(() => {
+        onToggle?.(pendingLandingRef.current);
+        pendingLandingRef.current = null;
+        setSwitchPhase("holding");
+      }, SWITCH_EXPAND_MS);
+      return () => clearTimeout(t);
+    }
+    if (switchPhase === "holding") {
+      const t = setTimeout(() => setSwitchPhase("fading"), SWITCH_HOLD_MS);
+      return () => clearTimeout(t);
+    }
+    if (switchPhase === "fading") {
+      const t = setTimeout(() => {
+        setSwitchPhase("idle");
+        setSwitchOrigin(null);
+        setSwitchDestinationMode(null);
+      }, SWITCH_FADE_MS);
+      return () => clearTimeout(t);
+    }
+  }, [switchPhase, onToggle]);
 
   // Single source of truth for both the CSS scale and the ring "activity" —
   // same precedence order as the old discrete SIZE values.
@@ -401,7 +639,7 @@ const CanvasPortal = ({
     if (!el) return;
 
     const MIN_ZOOM = 1;
-    const MAX_ZOOM = 3.5;
+    const MAX_ZOOM = 8; // was 3.5 — let people zoom in much further
 
     const handleWheel = (e) => {
       e.preventDefault();
@@ -590,6 +828,96 @@ const CanvasPortal = ({
 
   const fallbackBg = "#ffffff";
 
+  // The switch overlay is always a plain white canvas background (matching
+  // the real tldraw canvas) with the destination's actual shapes drawn on
+  // top via `imgUrl` — not a themed dark/tinted panel. Only the "Switching
+  // to ___" label picks up that side's accent color.
+  const destThemeColor =
+    switchDestinationMode === "public"
+      ? PUBLIC_THEME_COLOR
+      : PRIVATE_THEME_COLOR;
+  const destBg = "#ffffff";
+
+  // Geometry + transition for each phase of the expand/switch overlay. Only
+  // rendered while switchPhase !== "idle". "start" sits at the ring's own
+  // rect (switchOrigin) so the overlay visually grows out of the portal;
+  // once "expanding" reaches full-screen it simply stops moving — "fading"
+  // only changes opacity, in place, rather than shrinking back down.
+  let switchOverlayStyle = null;
+  if (switchPhase !== "idle" && switchOrigin) {
+    if (switchPhase === "start") {
+      switchOverlayStyle = {
+        left: switchOrigin.left,
+        top: switchOrigin.top,
+        width: switchOrigin.width,
+        height: switchOrigin.height,
+        borderRadius: "50%",
+        opacity: 1,
+        transition: "none",
+      };
+    } else if (switchPhase === "expanding") {
+      switchOverlayStyle = {
+        left: 0,
+        top: 0,
+        width: "100vw",
+        height: "100vh",
+        borderRadius: 0,
+        opacity: 1,
+        transition:
+          `left ${SWITCH_EXPAND_MS}ms cubic-bezier(0.22,1,0.36,1), ` +
+          `top ${SWITCH_EXPAND_MS}ms cubic-bezier(0.22,1,0.36,1), ` +
+          `width ${SWITCH_EXPAND_MS}ms cubic-bezier(0.22,1,0.36,1), ` +
+          `height ${SWITCH_EXPAND_MS}ms cubic-bezier(0.22,1,0.36,1), ` +
+          `border-radius ${SWITCH_EXPAND_MS}ms cubic-bezier(0.22,1,0.36,1)`,
+      };
+    } else if (switchPhase === "holding") {
+      // Sits exactly where "expanding" left off — full-screen, opaque, no
+      // transition — just a still beat before "fading" starts animating
+      // opacity down.
+      switchOverlayStyle = {
+        left: 0,
+        top: 0,
+        width: "100vw",
+        height: "100vh",
+        borderRadius: 0,
+        opacity: 1,
+        transition: "none",
+      };
+    } else {
+      // fading — stays pinned full-screen, only opacity animates
+      switchOverlayStyle = {
+        left: 0,
+        top: 0,
+        width: "100vw",
+        height: "100vh",
+        borderRadius: 0,
+        opacity: 0,
+        transition: `opacity ${SWITCH_FADE_MS}ms ease-in`,
+      };
+    }
+  }
+
+  // The "Switching to ___" label fades in partway through the expand (so it
+  // never appears squeezed into the tiny starting circle), stays fully
+  // opaque through the whole "holding" beat once the overlay fills the
+  // screen, and only fades back out once "fading" actually begins — this
+  // is what gives it real time to be read, instead of appearing for a
+  // handful of milliseconds right before the overlay itself starts
+  // dismissing.
+  const switchLabelStyle =
+    switchPhase === "expanding"
+      ? {
+          opacity: 1,
+          transition: `opacity ${Math.round(
+            SWITCH_EXPAND_MS * 0.5
+          )}ms ease-out ${Math.round(SWITCH_EXPAND_MS * 0.4)}ms`,
+        }
+      : switchPhase === "holding"
+      ? { opacity: 1, transition: "none" }
+      : switchPhase === "fading"
+      ? { opacity: 0, transition: `opacity ${SWITCH_FADE_MS}ms ease-in` }
+      : { opacity: 0, transition: "none" };
+
   return (
     <>
       <div
@@ -660,8 +988,35 @@ const CanvasPortal = ({
               data-canvas-portal="true"
               type="button"
               onDoubleClick={() => {
-                if (isDraggingSelection || isDragPublishReady) return;
-                onToggle?.();
+                if (
+                  isDraggingSelection ||
+                  isDragPublishReady ||
+                  switchPhase !== "idle"
+                )
+                  return;
+
+                // Capture what the user is actually looking at in the
+                // preview RIGHT NOW (pan/zoom included) so the new canvas
+                // can land on that exact view instead of its default one.
+                pendingLandingRef.current = getVisibleWorldRect();
+
+                const rect = buttonRef.current?.getBoundingClientRect();
+                if (!rect) {
+                  // Can't anchor the expand animation to anything real —
+                  // fall back to the old instant switch rather than show a
+                  // broken/undefined-position overlay.
+                  onToggle?.(pendingLandingRef.current);
+                  pendingLandingRef.current = null;
+                  return;
+                }
+                setSwitchOrigin({
+                  left: rect.left,
+                  top: rect.top,
+                  width: rect.width,
+                  height: rect.height,
+                });
+                setSwitchDestinationMode(isPublic ? "private" : "public");
+                setSwitchPhase("start");
               }}
               onPointerDown={(e) => {
                 // Only the preview-pan gesture starts here — dragging a
@@ -729,6 +1084,7 @@ const CanvasPortal = ({
             >
               {/* Portal window */}
               <div
+                ref={windowRef}
                 style={{
                   position: "absolute",
                   top: "50%",
@@ -750,6 +1106,12 @@ const CanvasPortal = ({
                       <img
                         src={imgUrl}
                         alt=""
+                        onLoad={(e) => {
+                          imgNaturalSizeRef.current = {
+                            w: e.currentTarget.naturalWidth || 1,
+                            h: e.currentTarget.naturalHeight || 1,
+                          };
+                        }}
                         style={{
                           position: "absolute",
                           inset: 0,
@@ -900,8 +1262,71 @@ const CanvasPortal = ({
           </div>
         </div>
       </div>
+
+      {switchOverlayStyle && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: "fixed",
+            zIndex: 999999,
+            pointerEvents: "none",
+            overflow: "hidden",
+            background: destBg,
+            ...switchOverlayStyle,
+          }}
+        >
+          {imgUrl && (
+            <img
+              src={imgUrl}
+              alt=""
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                objectFit: "contain",
+              }}
+            />
+          )}
+
+          {/* "Switching to ___ Canvas" label, shown for both directions —
+              fades in as the circle nears full-screen, fades back out the
+              moment the overlay starts dismissing itself. */}
+          {switchDestinationMode && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                ...switchLabelStyle,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 30,
+                  fontWeight: 700,
+                  letterSpacing: "0.01em",
+                  color: "#f1f1f1",
+                  background: "rgba(122, 62, 62, 0.82)",
+                  padding: "10px 22px",
+                  borderRadius: 12,
+                  boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
+                }}
+              >
+                Switching to{" "}
+                <span style={{ color: destThemeColor }}>
+                  {switchDestinationMode === "public" ? "Public" : "Private"}{" "}
+                  Canvas
+                </span>
+              </span>
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
-};
+});
 
 export default CanvasPortal;

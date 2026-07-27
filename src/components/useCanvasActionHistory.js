@@ -47,6 +47,14 @@ function normalizeHistoryRow(docSnap) {
     text: data.textPreview || data.text || "",
     imageUrl: data.imageUrl || "",
     timestamp: ts,
+    // Which canvas this happened on ("public" | "private") — older docs
+    // logged before this field existed default to "public", matching the
+    // app's original (pre-private-canvas) behavior. actorUid rides along
+    // so a private-canvas view can further narrow to just its own owner's
+    // entries, since the "actions" collection is shared across the whole
+    // team, not scoped per private-canvas owner.
+    space: data.space || "public",
+    actorUid: data.actorUid || null,
     // Keep the raw createdAt if you ever want to sort locally:
     // createdAt: data.createdAt ?? null,
   };
@@ -108,9 +116,10 @@ export function useCanvasActionHistory({
   }, [className, projectName, teamName]);
 
   useEffect(() => {
-    // If params are missing or hook disabled, clear and do nothing. This
-    // is also what keeps the private canvas from paying for a listener at
-    // all — the caller passes enabled={isPublicMode}.
+    // If params are missing or hook disabled, clear and do nothing.
+    // (Both public and private canvas now keep this enabled — see
+    // CollaborativeWhiteboard — since HistoryPanel does its own
+    // space/actorUid filtering on top of this shared stream.)
     if (!enabled || !actionsRef) {
       setActionHistory([]);
       return;

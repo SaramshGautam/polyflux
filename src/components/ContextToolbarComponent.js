@@ -33,6 +33,10 @@ const ContextToolbarComponent = track(
     // callback.
     commentFocusShapeId,
     onCommentFocusComputed,
+    // Which canvas is currently active ("public" | "private") — stamped
+    // onto reaction/comment logAction calls so History can tell public and
+    // private actions apart, since the "actions" collection is shared.
+    canvasMode = "public",
   }) => {
     const editor = useEditor();
     const tooltipWidth = 300;
@@ -174,6 +178,7 @@ const ContextToolbarComponent = track(
             verb: `reacted with ${emoji} on`,
             shapeId,
             shapeType: selectedShape.type,
+            space: canvasMode,
           });
         }
       } catch (err) {
@@ -371,6 +376,7 @@ const ContextToolbarComponent = track(
             onClose={() => setShowCommentBox(false)}
             setActionHistory={setActionHistory}
             fetchActionHistory={fetchActionHistory}
+            canvasMode={canvasMode}
           />
         )}
       </div>

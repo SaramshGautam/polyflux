@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useEditor, useValue } from "tldraw";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
@@ -53,6 +54,7 @@ function drawMinimap({
   shapeActorIdByShapeId,
   actorColorByActorId,
   selectedActorSet,
+  hasSelection, // ✅ explicit: distinguishes "all" (false) from "none"/"custom" (true, set may be empty)
 }) {
   if (!canvas) return null;
   const ctx = canvas.getContext("2d");
@@ -103,8 +105,8 @@ function drawMinimap({
     const h = Math.max(2, b.h * s);
 
     const actorId = shapeActorIdByShapeId?.[id] || null;
-    const hasSelection = selectedActorSet && selectedActorSet.size > 0;
-    const isSelected = actorId && hasSelection && selectedActorSet.has(actorId);
+    const isSelected =
+      actorId && hasSelection && selectedActorSet?.has(actorId);
 
     // const color = actorId ? actorColorByActorId.get(actorId) : null;
     const baseColor = actorId ? actorColorByActorId.get(actorId) : null;
@@ -162,6 +164,7 @@ function drawMinimap({
 
 function ActorFilteredMinimap({
   selectedActorIds,
+  allActive,
   shapeActorIdByShapeId,
   actorOptions,
 }) {
@@ -220,6 +223,7 @@ function ActorFilteredMinimap({
       shapeActorIdByShapeId,
       actorColorByActorId,
       selectedActorSet: selectedSet,
+      hasSelection: !allActive,
     });
 
     transformRef.current = t;
@@ -230,6 +234,7 @@ function ActorFilteredMinimap({
     shapeActorIdByShapeId,
     actorColorByActorId,
     selectedSet,
+    allActive,
   ]);
 
   const handlePointerDown = (e) => {
@@ -320,6 +325,42 @@ function dedupeActors(actorOptions) {
   return out;
 }
 
+// A short code/participant id like "P99", "P123", or a plain number ("42")
+// — optionally one leading letter, then digits. These should be shown in
+// full rather than reduced to a single initial.
+const ID_LIKE_RE = /^[A-Za-z]?\d+[A-Za-z0-9]*$/;
+
+// Turn a display name, email, or short id into label text for the chip, e.g.
+// "jane.doe@example.com" -> "JD", "Alice" -> "AL", "P99" -> "P99"
+function getActorInitials(a) {
+  const raw = (a?.label || a?.id || "").toString().trim();
+  if (!raw) return "?";
+
+  const namePart = raw.includes("@") ? raw.split("@")[0] : raw;
+
+  if (ID_LIKE_RE.test(namePart)) {
+    return namePart.slice(0, 4).toUpperCase();
+  }
+
+  const cleaned = namePart.replace(/[._\-+0-9]+/g, " ").trim();
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+
+  if (parts.length === 0) return namePart.slice(0, 2).toUpperCase();
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+const ACTOR_BUTTON_SIZE = 34;
+const ACTOR_BUTTON_RADIUS = 10;
+const ACTOR_BUTTON_GAP = 6;
+const ALL_BUTTON_COLOR = "#111827";
+const MAX_VISIBLE_ACTORS = 3;
+const OVERFLOW_CLOSE_DELAY = 150;
+
+const MIN_ZOOM = 0.05; // 5%
+const MAX_ZOOM = 4; // 400%
+const ZOOM_EPSILON = 0.0005;
+
 /**
  * CustomNavigationPanel
  * - Collapsed: ONLY chevron + zoom controls
@@ -332,6 +373,27 @@ export function CustomNavigationPanel({
 }) {
   const editor = useEditor();
 
+  // reactive zoom level so the "100%" button can show the current scale
+  const zoom = useValue("camera-zoom", () => editor.getCamera().z, [editor]);
+  const zoomPct = Math.round((zoom || 1) * 100);
+
+  const atMinZoom = zoom <= MIN_ZOOM + ZOOM_EPSILON;
+  const atMaxZoom = zoom >= MAX_ZOOM - ZOOM_EPSILON;
+
+  const handleZoomOut = () => {
+    if (atMinZoom) return;
+    editor.zoomOut();
+    const cam = editor.getCamera();
+    if (cam.z < MIN_ZOOM) editor.setCamera({ ...cam, z: MIN_ZOOM });
+  };
+
+  const handleZoomIn = () => {
+    if (atMaxZoom) return;
+    editor.zoomIn();
+    const cam = editor.getCamera();
+    if (cam.z > MAX_ZOOM) editor.setCamera({ ...cam, z: MAX_ZOOM });
+  };
+
   // const actors = useMemo(
   //   () => actorOptions.slice(0, maxActors),
   //   [actorOptions, maxActors]
@@ -342,9 +404,14 @@ export function CustomNavigationPanel({
   }, [actorOptions, maxActors]);
 
   const [selectedActorIds, setSelectedActorIds] = useState([]);
+  // true = "All" highlighted (every actor shown/highlighted, no filtering)
+  // false + empty selectedActorIds = "None" (explicitly toggled off, nothing highlighted)
+  // false + non-empty selectedActorIds = custom subset selected
+  const [allActive, setAllActive] = useState(true);
   const [isCollapsed, setIsCollapsed] = useState(true);
 
   const toggleActor = (actorId) => {
+    setAllActive(false);
     setSelectedActorIds((prev) => {
       const set = new Set(prev);
       if (set.has(actorId)) set.delete(actorId);
@@ -353,15 +420,107 @@ export function CustomNavigationPanel({
     });
   };
 
-  const clearSelection = () => setSelectedActorIds([]);
+  // "All" is a real toggle: if it's already highlighted (showing everyone),
+  // pressing it again flips to "none" (nothing highlighted); pressing it
+  // again from "none" flips back to "all".
+  const toggleAll = () => {
+    setAllActive((prev) => !prev);
+    setSelectedActorIds([]);
+  };
 
-  // when collapsing, clear selection so collapsed state is "no filters"
+  // when collapsing, reset to the default "all" state
   useEffect(() => {
-    if (isCollapsed) setSelectedActorIds([]);
+    if (isCollapsed) {
+      setSelectedActorIds([]);
+      setAllActive(true);
+      setOverflowOpen(false);
+    }
   }, [isCollapsed]);
 
   // const colorMap = buildActorColorMap(actors);
   const colorMap = useMemo(() => buildActorColorMap(actors), [actors]);
+
+  // Show at most MAX_VISIBLE_ACTORS inline; the rest live behind a "+N" pill
+  // that reveals a hover overlay so the top row never overflows.
+  const visibleActors = useMemo(
+    () => actors.slice(0, MAX_VISIBLE_ACTORS),
+    [actors]
+  );
+  const overflowActors = useMemo(
+    () => actors.slice(MAX_VISIBLE_ACTORS),
+    [actors]
+  );
+
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [overlayPos, setOverlayPos] = useState(null);
+  const overflowBtnRef = useRef(null);
+  const closeTimeoutRef = useRef(null);
+
+  const clearCloseTimeout = () => {
+    if (closeTimeoutRef.current) {
+      clearTimeout(closeTimeoutRef.current);
+      closeTimeoutRef.current = null;
+    }
+  };
+
+  const openOverflow = () => {
+    clearCloseTimeout();
+    const el = overflowBtnRef.current;
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      setOverlayPos({ top: rect.bottom + 8, left: rect.left + rect.width / 2 });
+    }
+    setOverflowOpen(true);
+  };
+
+  const scheduleCloseOverflow = () => {
+    clearCloseTimeout();
+    closeTimeoutRef.current = setTimeout(
+      () => setOverflowOpen(false),
+      OVERFLOW_CLOSE_DELAY
+    );
+  };
+
+  useEffect(() => clearCloseTimeout, []);
+
+  const renderActorButton = (a, size = ACTOR_BUTTON_SIZE) => {
+    const actorKey = a._actorKey || getActorKey(a);
+    // When "All" is active, every actor reads as included.
+    const active = allActive || selectedActorIds.includes(actorKey);
+    const color = colorMap.get(actorKey) || ALL_BUTTON_COLOR;
+    const initials = getActorInitials(a);
+    const fontSize = Math.max(9, Math.round(size * 0.34));
+
+    return (
+      <button
+        key={actorKey}
+        type="button"
+        onClick={() => toggleActor(actorKey)}
+        className="tlui-button"
+        title={actorKey}
+        aria-pressed={active}
+        style={{
+          width: size,
+          height: size,
+          flex: "0 0 auto",
+          borderRadius: ACTOR_BUTTON_RADIUS,
+          fontWeight: 800,
+          fontSize,
+          letterSpacing: 0.2,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 0,
+          border: `2px solid ${active ? color : "rgba(0,0,0,0.12)"}`,
+          background: active ? `${color}22` : "rgba(255,255,255,0.92)",
+          boxShadow: active ? `0 0 0 2px ${color}22` : "none",
+          transition: "background 0.12s ease, border-color 0.12s ease",
+        }}
+      >
+        {initials}
+      </button>
+    );
+  };
 
   return (
     <div
@@ -370,7 +529,7 @@ export function CustomNavigationPanel({
       style={{
         position: "relative",
         height: isCollapsed ? 50 : MINIMAP_H,
-        width: isCollapsed ? 210 : MINIMAP_W,
+        width: isCollapsed ? 250 : MINIMAP_W,
       }}
       onPointerDown={(e) => e.stopPropagation()}
       onPointerUp={(e) => e.stopPropagation()}
@@ -389,7 +548,7 @@ export function CustomNavigationPanel({
           outline: "none",
           display: "flex",
           alignItems: "center",
-          width: "90%",
+          width: "100%",
           gap: 5,
           padding: 5,
         }}
@@ -398,9 +557,16 @@ export function CustomNavigationPanel({
         <button
           type="button"
           className="tlui-button tlui-button__icon"
-          title="Zoom out"
-          onClick={() => editor.zoomOut()}
-          style={{ width: 34, height: 34, borderRadius: 10 }}
+          title={atMinZoom ? "Minimum zoom (5%)" : "Zoom out"}
+          onClick={handleZoomOut}
+          disabled={atMinZoom}
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: 10,
+            opacity: atMinZoom ? 0.35 : 1,
+            cursor: atMinZoom ? "not-allowed" : "pointer",
+          }}
         >
           -
         </button>
@@ -408,7 +574,7 @@ export function CustomNavigationPanel({
         <button
           type="button"
           className="tlui-button tlui-button__icon"
-          title="Zoom to 100%"
+          title={`${zoomPct}% — click to reset to 100%`}
           onClick={() =>
             editor.setCamera({
               x: editor.getCamera().x,
@@ -416,96 +582,132 @@ export function CustomNavigationPanel({
               z: 1,
             })
           }
-          style={{ height: 34, borderRadius: 10, padding: "0 10px" }}
+          style={{
+            height: 34,
+            minWidth: 34,
+            borderRadius: 10,
+            padding: "0 10px",
+            fontVariantNumeric: "tabular-nums",
+          }}
         >
-          100%
+          {zoomPct}%
         </button>
 
         <button
           type="button"
           className="tlui-button tlui-button__icon"
-          title="Zoom in"
-          onClick={() => editor.zoomIn()}
-          style={{ width: 34, height: 34, borderRadius: 10 }}
+          title={atMaxZoom ? "Maximum zoom (400%)" : "Zoom in"}
+          onClick={handleZoomIn}
+          disabled={atMaxZoom}
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: 10,
+            opacity: atMaxZoom ? 0.35 : 1,
+            cursor: atMaxZoom ? "not-allowed" : "pointer",
+          }}
         >
           +
         </button>
 
         {/* push participant buttons to the right */}
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+        <div
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            alignItems: "center",
+            gap: ACTOR_BUTTON_GAP,
+          }}
+        >
+          {isCollapsed && (
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: "rgba(0,0,0,0.4)",
+                letterSpacing: 0.3,
+                whiteSpace: "nowrap",
+                userSelect: "none",
+              }}
+            >
+              Minimap
+            </span>
+          )}
+
           {!isCollapsed && (
             <>
-              {/* "All" reset */}
+              {/* "All" toggle — highlighted whenever everyone is shown; click flips to "none" and back */}
               <button
                 type="button"
                 className="tlui-button"
-                onClick={clearSelection}
-                title="Show all"
+                onClick={toggleAll}
+                title="Toggle all"
+                aria-pressed={allActive}
                 style={{
-                  width: 34,
-                  height: 34,
-                  borderRadius: 10,
+                  width: ACTOR_BUTTON_SIZE,
+                  height: ACTOR_BUTTON_SIZE,
+                  flex: "0 0 auto",
+                  borderRadius: ACTOR_BUTTON_RADIUS,
                   fontWeight: 800,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                   padding: 0,
+                  border: `2px solid ${
+                    allActive ? ALL_BUTTON_COLOR : "rgba(0,0,0,0.12)"
+                  }`,
+                  background: allActive
+                    ? `${ALL_BUTTON_COLOR}1A`
+                    : "rgba(255,255,255,0.92)",
+                  boxShadow: allActive
+                    ? `0 0 0 2px ${ALL_BUTTON_COLOR}22`
+                    : "none",
+                  transition: "background 0.12s ease, border-color 0.12s ease",
                 }}
               >
                 All
               </button>
 
-              {/* participant buttons */}
-              {actors.map((a) => {
-                // const actorKey = a.label || a.id;
-                const actorKey = a._actorKey || getActorKey(a);
-                const active = selectedActorIds.includes(actorKey);
+              {/* visible participant buttons (capped) */}
+              {visibleActors.map((a) => renderActorButton(a))}
 
-                // ✅ color based on actorKey (now matches the map)
-                // const colorMap = buildActorColorMap(actors);
-
-                const color = colorMap.get(actorKey) || "#111827";
-
-                return (
-                  <button
-                    key={actorKey}
-                    type="button"
-                    onClick={() => toggleActor(actorKey)}
-                    className="tlui-button"
-                    title={actorKey}
-                    aria-pressed={active}
-                    style={{
-                      width: 34,
-                      height: 34,
-                      // borderRadius: 10,
-                      borderRadius: active ? 12 : 10,
-                      fontWeight: 800,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      padding: 0,
-
-                      // border: active
-                      //   ? `3px solid ${color}`
-                      //   : "1px solid rgba(0,0,0,0.12)",
-                      border: active
-                        ? `3px solid ${color}`
-                        : `2px solid ${color}`,
-                      // background: active
-                      //   ? `${color}22`
-                      //   : "rgba(255,255,255,0.92)",
-                      background: active
-                        ? `${color}22`
-                        : `rgba(255,255,255,0.92)`,
-
-                      // boxShadow: active ? `0 0 0 2px ${color}22` : "none",
-                      boxShadow: active ? `0 0 0 2px ${color}22` : "none",
-                    }}
-                  >
-                    {a.label || a.id}
-                  </button>
-                );
-              })}
+              {/* overflow pill trigger — hover to reveal the rest */}
+              {overflowActors.length > 0 && (
+                <button
+                  ref={overflowBtnRef}
+                  type="button"
+                  className="tlui-button"
+                  title={`${overflowActors.length} more`}
+                  aria-expanded={overflowOpen}
+                  onMouseEnter={openOverflow}
+                  onMouseLeave={scheduleCloseOverflow}
+                  onClick={() =>
+                    overflowOpen ? setOverflowOpen(false) : openOverflow()
+                  }
+                  style={{
+                    width: ACTOR_BUTTON_SIZE,
+                    height: ACTOR_BUTTON_SIZE,
+                    flex: "0 0 auto",
+                    borderRadius: ACTOR_BUTTON_RADIUS,
+                    fontWeight: 800,
+                    fontSize: 12,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 0,
+                    border: `2px solid ${
+                      overflowOpen ? ALL_BUTTON_COLOR : "rgba(0,0,0,0.12)"
+                    }`,
+                    background: overflowOpen
+                      ? `${ALL_BUTTON_COLOR}1A`
+                      : "rgba(255,255,255,0.92)",
+                    transition:
+                      "background 0.12s ease, border-color 0.12s ease",
+                  }}
+                >
+                  +{overflowActors.length}
+                </button>
+              )}
             </>
           )}
         </div>
@@ -528,10 +730,44 @@ export function CustomNavigationPanel({
       {!isCollapsed && (
         <ActorFilteredMinimap
           selectedActorIds={selectedActorIds}
+          allActive={allActive}
           shapeActorIdByShapeId={shapeActorIdByShapeId}
           actorOptions={actors}
         />
       )}
+
+      {/* ===== Overflow overlay: pill-shaped, portaled to <body> so it's never clipped ===== */}
+      {overflowOpen &&
+        overlayPos &&
+        overflowActors.length > 0 &&
+        createPortal(
+          <div
+            onMouseEnter={clearCloseTimeout}
+            onMouseLeave={scheduleCloseOverflow}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: "fixed",
+              top: overlayPos.top,
+              left: overlayPos.left,
+              transform: "translate(-50%, 0)",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "6px 10px",
+              borderRadius: 999,
+              background: "rgba(255,255,255,0.98)",
+              boxShadow:
+                "0 8px 20px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.06)",
+              zIndex: 10000,
+            }}
+          >
+            {overflowActors.map((a) => renderActorButton(a, 30))}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
