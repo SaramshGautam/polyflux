@@ -41,6 +41,7 @@ import {
   addDoc,
   orderBy,
   query,
+  limit,
   setDoc,
   serverTimestamp,
   onSnapshot,
@@ -460,6 +461,7 @@ const CollaborativeWhiteboard = () => {
   const [showSidebar, setShowSidebar] = useState(false);
   const [messages, setMessages] = useState([]);
   const [shapesForAnalysis, setShapesForAnalysis] = useState([]);
+  const [movesForAnalysis, setMovesForAnalysis] = useState([]);
   const [speechForAnalysis, setSpeechForAnalysis] = useState([]);
 
   const recorderRef = useRef(null);
@@ -733,8 +735,15 @@ const CollaborativeWhiteboard = () => {
         const added = entry?.changes?.added
           ? Object.values(entry.changes.added)
           : [];
+        // entry.changes.updated is a map of id -> [from, to] tuples (tldraw's
+        // RecordsDiff shape), not flat records like `added`/`removed`. Passing
+        // those tuples straight into maybeStamp() meant `rec.typeName` was
+        // always undefined (arrays don't have that property), so
+        // isShapeRecord was always false and this stamp silently never fired
+        // for updates — only brand-new shapes ever got createdBy/updatedBy
+        // set. Unwrapping to the "to" half of each pair fixes that.
         const updated = entry?.changes?.updated
-          ? Object.values(entry.changes.updated)
+          ? Object.values(entry.changes.updated).map(([, to]) => to)
           : [];
 
         const maybeStamp = (rec) => {
@@ -1537,6 +1546,57 @@ const CollaborativeWhiteboard = () => {
       },
       (error) => {
         console.error("Error listening to shapes:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [className, projectName, teamName]);
+
+  // export_buffer is the real interaction-event stream (add/move/edit/
+  // delete — see registershapes.js's buildMoveFromShape/
+  // appendMoveToExportBuffer) and, unlike the `shapes` snapshot above,
+  // sees deletions and every intermediate edit rather than only current
+  // state. The backend's /analyze route prefers these as `moves` when
+  // present, falling back to reconstructing moves from `shapes` when
+  // they're not sent (see export_buffer_moves_to_episode in
+  // phase_prediction_pipeline.py).
+  //
+  // Bounded to the most recent MOVES_ANALYZE_LIMIT events: export_buffer
+  // is append-only and can grow large over a long session, and this
+  // listener re-fires on every new event, so an unbounded query would
+  // mean re-reading the entire session's history on every single move.
+  // The backend re-sorts by timestamp itself, so the order these arrive
+  // in here doesn't matter.
+  useEffect(() => {
+    if (!className || !projectName || !teamName) return;
+
+    const MOVES_ANALYZE_LIMIT = 3000;
+
+    const exportBufferCol = collection(
+      db,
+      "classrooms",
+      className,
+      "Projects",
+      projectName,
+      "teams",
+      teamName,
+      "export_buffer"
+    );
+
+    const q = query(
+      exportBufferCol,
+      orderBy("_serverAt", "desc"),
+      limit(MOVES_ANALYZE_LIMIT)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const moves = snapshot.docs.map((docSnap) => docSnap.data());
+        setMovesForAnalysis(moves);
+      },
+      (error) => {
+        console.error("Error listening to export_buffer:", error);
       }
     );
 
@@ -2350,6 +2410,12 @@ const CollaborativeWhiteboard = () => {
       const payload = {
         canvasId: `${className}_${projectName}_${teamName}`,
         shapes: shapesForAnalysis || [],
+        // Real interaction-event stream (see the export_buffer listener
+        // above) — the backend prefers this over reconstructing moves
+        // from `shapes` when it's present (export_buffer_moves_to_episode
+        // in phase_prediction_pipeline.py), since it sees deletions and
+        // every intermediate edit rather than only current state.
+        moves: movesForAnalysis || [],
         speech: normalizedSpeechForAnalysis || [],
         source,
       };
@@ -2374,6 +2440,7 @@ const CollaborativeWhiteboard = () => {
       projectName,
       teamName,
       shapesForAnalysis,
+      movesForAnalysis,
       normalizedSpeechForAnalysis,
     ]
   );
@@ -3147,6 +3214,7 @@ const CollaborativeWhiteboard = () => {
             targets={selectedTargets}
             params={{}}
             shapes={shapesForAnalysis}
+            moves={movesForAnalysis}
             forceOpen={chatbotOpen}
             onClose={() => setChatbotOpen(false)}
             onNudgeComputed={({
@@ -3184,6 +3252,7 @@ const CollaborativeWhiteboard = () => {
           targets={selectedTargets}
           params={{}}
           shapes={shapesForAnalysis}
+          moves={movesForAnalysis}
           onNudgeComputed={({
             tailShapeIds,
             currentPhase,

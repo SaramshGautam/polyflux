@@ -813,7 +813,7 @@ const CanvasPortal = forwardRef(function CanvasPortal(
 
     animRef.current = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(animRef.current);
-  }, [isPublic]);
+  }, [isPublic, ringColor, sparkColors]);
 
   const glowNear = isArriving ? 44 : portalActive ? 28 : 14;
   const glowFar = isArriving ? 90 : portalActive ? 56 : 28;

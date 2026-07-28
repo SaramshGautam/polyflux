@@ -703,6 +703,27 @@ export async function registerShape(newShape, userContext, editor) {
       // original id. Update only what actually changed (position, team,
       // text/color/url) and leave createdBy, createdAt, comments, and
       // reactions exactly as they were.
+      const prevPos = existingData.position || {};
+      const posChanged = prevPos.x !== x || prevPos.y !== y;
+      const contentChanged =
+        (props?.text !== undefined &&
+          props.text !== (existingData.text || "")) ||
+        (props?.color !== undefined &&
+          props.color !== (existingData.color || "#000000")) ||
+        !!finalImageUrl;
+
+      // Real interaction-type for this write, read by the backend's
+      // linkograph pipeline (phase_prediction_pipeline.py's
+      // RAW_ACTION_KEYS / _normalize_event_action). Without this, every
+      // re-registration looked identical whether it moved the shape or
+      // changed its content — "move" vs "edit" feed very different
+      // downstream signals (org-ops vs. new/refined content).
+      const inferredAction = contentChanged
+        ? "edit"
+        : posChanged
+        ? "move"
+        : "updated";
+
       const updatePayload = {
         shapeType,
         position: { x, y },
@@ -710,6 +731,7 @@ export async function registerShape(newShape, userContext, editor) {
         color: props?.color ?? existingData.color ?? "#000000",
         teamName,
         updatedAt: serverTimestamp(),
+        lastAction: inferredAction,
       };
       if (finalImageUrl) updatePayload.url = finalImageUrl;
 
@@ -718,11 +740,12 @@ export async function registerShape(newShape, userContext, editor) {
         `[registerShape] Preserved existing metadata for ${shapeID} ` +
           `(createdBy: ${existingData.createdBy}, ` +
           `${(existingData.comments || []).length} comment(s), ` +
-          `reactions intact) — updated position/text/color/team only.`
+          `reactions intact) — updated position/text/color/team only ` +
+          `(lastAction: ${inferredAction}).`
       );
 
       const move = buildMoveFromShape({
-        action: "updated",
+        action: inferredAction,
         shape: newShape,
         userId,
         ts: new Date().toISOString(),
@@ -743,6 +766,7 @@ export async function registerShape(newShape, userContext, editor) {
       teamName,
       createdAt: serverTimestamp(),
       createdBy: userId,
+      lastAction: "added",
       comments: [],
       reactions: {
         like: [],
@@ -1201,18 +1225,28 @@ export function startEditSession({ shape, userContext }) {
 //   _debounceTimers.set(key, timer);
 // }
 
-export async function scheduleUpdateShape(shape, userContext) {
-  const { className, projectName, teamName } = userContext || {};
+export async function scheduleUpdateShape(shape, userContext, options = {}) {
+  // immediate: bypass the debounce and write right now (used by
+  // endEditSession to flush a pending write before it logs its own
+  // session summary — see the BUG FIX note there).
+  // skipExportBuffer: don't log a move for this particular write (also
+  // used by endEditSession, which logs its own move with proper
+  // dwell_ms/session stats — logging here too would double-count one
+  // edit as two separate moves).
+  const { immediate = false, skipExportBuffer = false } = options;
+
+  const { className, projectName, teamName, userId } = userContext || {};
   const { id: shapeID, type: shapeType, props, x, y } = shape || {};
   if (!shapeID || !className || !projectName || !teamName) return;
 
-  // Throttle position-only moves
+  // Throttle position-only moves — skipped for immediate/flush calls,
+  // since those are explicitly asking to commit right now regardless.
   const onlyPosition =
     props?.text === undefined &&
     props?.color === undefined &&
     props?.url === undefined;
 
-  if (onlyPosition) {
+  if (onlyPosition && !immediate) {
     const lastAt = _lastWriteAt.get(shapeID) || 0;
     if (Date.now() - lastAt < DRAG_THROTTLE_MS) return;
     _lastWriteAt.set(shapeID, Date.now());
@@ -1244,13 +1278,8 @@ export async function scheduleUpdateShape(shape, userContext) {
   if (Object.keys(updatePayload).length === 0) return;
 
   const key = shapeID;
-  const h = hash(updatePayload);
-  if (_lastPayloadHash.get(key) === h) return;
-  _lastPayloadHash.set(key, h);
 
-  if (_debounceTimers.get(key)) clearTimeout(_debounceTimers.get(key));
-
-  const timer = setTimeout(async () => {
+  const runWrite = async () => {
     const shapeRef = doc(
       db,
       "classrooms",
@@ -1273,9 +1302,40 @@ export async function scheduleUpdateShape(shape, userContext) {
       return;
     }
 
+    const existingBefore = snap.data() || {};
+
+    // Real interaction-type for this write, read by the backend's
+    // linkograph pipeline (phase_prediction_pipeline.py's RAW_ACTION_KEYS
+    // / _normalize_event_action). This debounced path is what actually
+    // fires on ordinary dragging and typing, so tagging it precisely is
+    // what unblocks org-ops-based signals (num_org_ops, refinement_loop)
+    // downstream — previously every write here looked identical whether
+    // it was a drag or a content edit, and pure drags never produced any
+    // discrete event at all (only registerShape's create/re-register
+    // paths and endEditSession's committed-text-edit path appended to
+    // export_buffer).
+    const prevPos = existingBefore.position || {};
+    const posChanged =
+      updatePayload.position !== undefined &&
+      (prevPos.x !== updatePayload.position.x ||
+        prevPos.y !== updatePayload.position.y);
+    const contentChanged =
+      (updatePayload.text !== undefined &&
+        updatePayload.text !== (existingBefore.text || "")) ||
+      (updatePayload.color !== undefined &&
+        updatePayload.color !== (existingBefore.color || "#000000")) ||
+      updatePayload.url !== undefined;
+
+    const inferredAction = contentChanged
+      ? "edit"
+      : posChanged
+      ? "move"
+      : "updated";
+
     await updateDoc(shapeRef, {
       ...updatePayload,
       updatedAt: serverTimestamp(),
+      lastAction: inferredAction,
     });
     _lastWriteAt.set(key, Date.now());
 
@@ -1285,7 +1345,57 @@ export async function scheduleUpdateShape(shape, userContext) {
       if (props?.text !== undefined) ses.lastText = props.text || "";
       _sessions.set(key, ses);
     }
-  }, DEBOUNCE_MS);
+
+    // Record a discrete move for this write too. Debounce/throttle above
+    // already collapse a continuous drag or typing burst down to one
+    // write per pause, so this fires roughly once per real "gesture,"
+    // not once per pointer-move event.
+    if (userId && !skipExportBuffer) {
+      try {
+        const move = buildMoveFromShape({
+          action: inferredAction,
+          shape,
+          userId,
+          ts: new Date().toISOString(),
+          overrideUrl: updatePayload.url,
+        });
+        await appendMoveToExportBuffer({
+          className,
+          projectName,
+          teamName,
+          move,
+        });
+      } catch (e) {
+        console.error(
+          "[scheduleUpdateShape] failed to append move to export buffer:",
+          e
+        );
+      }
+    }
+  };
+
+  if (immediate) {
+    // BUG FIX: previously, callers wanting an immediate write (see
+    // endEditSession) had no way to bypass the debounce — calling this
+    // function again just cleared the old timer and armed a fresh
+    // DEBOUNCE_MS-delayed one, so a "final immediate write" wasn't
+    // actually immediate at all. This path genuinely writes right now.
+    if (_debounceTimers.get(key)) {
+      clearTimeout(_debounceTimers.get(key));
+      _debounceTimers.delete(key);
+    }
+    _lastPayloadHash.set(key, hash(updatePayload));
+    await runWrite();
+    return;
+  }
+
+  const h = hash(updatePayload);
+  if (_lastPayloadHash.get(key) === h) return;
+  _lastPayloadHash.set(key, h);
+
+  if (_debounceTimers.get(key)) clearTimeout(_debounceTimers.get(key));
+
+  const timer = setTimeout(runWrite, DEBOUNCE_MS);
 
   _debounceTimers.set(key, timer);
 }
@@ -1296,12 +1406,15 @@ export async function endEditSession({ shape, userContext, userId }) {
   const ses = _sessions.get(key);
   if (!ses) return;
 
-  // Flush pending debounced write (if any)
+  // Flush pending debounced write (if any). skipExportBuffer:true because
+  // this function logs its own move below with proper dwell_ms/session
+  // stats — without it, a text edit would get logged twice (once from
+  // this flush, once from the explicit buildMoveFromShape call below).
   if (_debounceTimers.get(key)) {
-    clearTimeout(_debounceTimers.get(key));
-    _debounceTimers.delete(key);
-    // Fire a final immediate write of the last known values:
-    await scheduleUpdateShape(shape, userContext);
+    await scheduleUpdateShape(shape, userContext, {
+      immediate: true,
+      skipExportBuffer: true,
+    });
   }
 
   const durationMs = Date.now() - ses.startedAt;
@@ -1339,8 +1452,12 @@ export async function endEditSession({ shape, userContext, userId }) {
 
   await batch.commit();
 
+  // This path only ever runs after isSignificantChange() confirmed the
+  // committed text actually changed, so "edit" is precise here (unlike
+  // the generic "updated" used elsewhere as a last-resort fallback when
+  // nothing detectably changed).
   const move = buildMoveFromShape({
-    action: "updated",
+    action: "edit",
     shape,
     userId,
     ts: new Date().toISOString(),
@@ -1569,14 +1686,24 @@ export async function upsertImageUrl(userContext, shapeId, urlOrProps) {
   return finalUrl;
 }
 
-/** Convert a userId into a small actor index (0/1/2...) deterministically. */
-function actorIndex(userId) {
-  // Stable but simple hash → small bucket
-  let h = 0;
-  for (let i = 0; i < (userId || "").length; i++) {
-    h = (h * 31 + userId.charCodeAt(i)) >>> 0;
-  }
-  return h % 3; // 0..2
+/**
+ * Resolve the actor identity to store on a move.
+ *
+ * BUG FIX: this used to hash userId down into a bucket of only 3 values
+ * (`h % 3`), which silently merges distinct real people into the same
+ * "actor" any time there are more than 3 participants (or, since it's a
+ * plain char-code hash, even with only 2-3 people whenever their ids
+ * happen to hash to the same bucket). That directly corrupts
+ * participation-based signals downstream (max_actor_share/min_actor_share,
+ * the participation_imbalance_group trigger) by making different people
+ * look like the same person. The backend's get_actor_id() (in
+ * linkograph_pipeline_clip_confidence.py) already treats "actor" as an
+ * opaque string key and groups by distinct values — it has no need for a
+ * small numeric bucket — so there was never a reason to hash this at all.
+ * Keeping the raw id preserves exact per-person identity.
+ */
+function resolveActorKey(userId) {
+  return String(userId || "unknown");
 }
 
 /** Best-effort tags from text */
@@ -1591,7 +1718,13 @@ function tagify(text) {
 
 /**
  * Append one move into an append-only buffer:
- * teams/{TEAM}/export_buffer/moves/{autoId}
+ * classrooms/{c}/Projects/{p}/teams/{TEAM}/export_buffer/{autoId}
+ *
+ * (Despite the name, export_buffer is a direct subcollection of the team
+ * doc, not a document with its own "moves" subcollection beneath it —
+ * each move is its own auto-ID doc directly inside export_buffer. The
+ * previous comment here described a "teams/{TEAM}/export_buffer/moves/
+ * {autoId}" path that doesn't match what the code below actually does.)
  */
 export async function appendMoveToExportBuffer({
   className,
@@ -1642,9 +1775,25 @@ export function buildMoveFromShape({
   //   shape?.props?.imageSrc ||
   //   null;
 
+  // Position lives at the top level of a tldraw shape record (shape.x /
+  // shape.y), not nested in props. Every call site that has a live shape
+  // to read from (registerShape, scheduleUpdateShape, endEditSession)
+  // passes one through untouched, so this is populated whenever it can
+  // be. deleteShape is the one exception — it only has a shapeId by the
+  // time it builds a move (the shape is already gone), so it passes a
+  // synthetic { id, type, props: {} } stand-in with no x/y, and this
+  // correctly comes out as `hasPosition: false` for that case. The
+  // backend (phase_prediction_pipeline.py's _SequentialTempoTracker /
+  // export_buffer_moves_to_episode) is built to handle a missing
+  // position gracefully rather than assuming (0, 0), so omitting the key
+  // entirely here — instead of sending a fake origin point — is the
+  // correct thing to do, not a workaround.
+  const hasPosition =
+    typeof shape?.x === "number" && typeof shape?.y === "number";
+
   return {
     text: text || `${a} ${shapeType}`,
-    actor: actorIndex(userId),
+    actor: resolveActorKey(userId),
     timestamp: t,
     action: a,
     itemType: shapeType,
@@ -1654,6 +1803,7 @@ export function buildMoveFromShape({
       imageUrls: url ? [url] : [],
       tags: tagify(text),
     },
+    ...(hasPosition ? { position: { x: shape.x, y: shape.y } } : {}),
     micro: {
       pointer_path_px: null,
       dwell_ms: null,

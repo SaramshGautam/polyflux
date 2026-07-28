@@ -278,6 +278,7 @@ const ChatBot = ({
   targets,
   params,
   shapes,
+  moves,
   onNudgeComputed,
   nudgeFocusShapeId,
   onNudgeFocusComputed,
@@ -853,11 +854,14 @@ const ChatBot = ({
   });
 
   const runAnalyzeNudge = async (source = "auto") => {
-    if (!shapes || !Array.isArray(shapes) || shapes.length === 0) return;
+    const hasShapes = Array.isArray(shapes) && shapes.length > 0;
+    const hasMoves = Array.isArray(moves) && moves.length > 0;
+    if (!hasShapes && !hasMoves) return;
 
     if (source === "auto") {
       await logBotEvent("auto_nudge_analyze_start", {
-        shapesCount: shapes.length,
+        shapesCount: hasShapes ? shapes.length : 0,
+        movesCount: hasMoves ? moves.length : 0,
       });
     }
 
@@ -868,10 +872,15 @@ const ChatBot = ({
       inFlight: false,
     };
 
-    // HYBRID TRIGGER — only for auto mode
+    // HYBRID TRIGGER — only for auto mode. Prefer moves.length as the
+    // activity signal when we have it (a real count of discrete
+    // interaction events), falling back to shapes.length — the previous
+    // and only available proxy — when moves isn't populated yet.
+    const activityCount = hasMoves ? moves.length : hasShapes ? shapes.length : 0;
+
     if (source === "auto") {
       const elapsed = now - (last.time || 0); // ms
-      const moveDelta = shapes.length - (last.moveCount || 0);
+      const moveDelta = activityCount - (last.moveCount || 0);
 
       // If not enough time and not enough new moves, skip
       if (elapsed < 30_000 && moveDelta < 6) {
@@ -905,7 +914,12 @@ const ChatBot = ({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             episode_id: episodeId,
-            shapes: shapes,
+            shapes: hasShapes ? shapes : [],
+            // Real interaction-event stream, preferred by the backend
+            // over reconstructing moves from `shapes` when present (see
+            // export_buffer_moves_to_episode in
+            // phase_prediction_pipeline.py).
+            moves: hasMoves ? moves : [],
             window_sec: 15,
             min_link: 0.5,
             tail_window_count: 6, // match backend default
@@ -1136,7 +1150,7 @@ const ChatBot = ({
       ]);
 
       lastAnalyzeRef.current.time = now;
-      lastAnalyzeRef.current.moveCount = shapes.length;
+      lastAnalyzeRef.current.moveCount = activityCount;
     } catch (err) {
       console.error("Nudge request failed:", err);
       setMessages((prev) => [
