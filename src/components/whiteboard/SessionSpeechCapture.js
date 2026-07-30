@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { db, auth } from "../../firebaseConfig";
+import { resolveMyActorId } from "../../utils/registershapes";
 import "../navbar/Navbar.css";
 
 const SpeechRecognition =
@@ -46,12 +47,25 @@ export default function SessionSpeechCapture({
           {
             type: "utterance",
             text: trimmed,
+            // speakerId stays "unknown" — the Web Speech API doesn't do
+            // real multi-speaker diarization, so there's no way to tell
+            // WHO in the room said this from the audio itself. capturedBy
+            // (whose browser/mic actually ran recognition) is the
+            // meaningful identity here.
             speakerId: "unknown",
             speakerLabel: "Unknown speaker",
-            capturedBy:
-              auth.currentUser?.displayName ||
-              auth.currentUser?.email ||
-              "anon",
+            // BUG FIX: this used to be its own displayName||email chain
+            // (no uid fallback) — yet another variant of the identity
+            // mismatch resolveMyActorId's doc comment describes. It
+            // matters more here than most places: the backend now folds
+            // speech utterances into the same participation/activity
+            // accounting as canvas moves (see
+            // phase_prediction_pipeline.py's speech_events_to_moves), so
+            // this MUST resolve to the exact same string this person's
+            // canvas actions are tagged with, or their spoken and
+            // on-canvas contributions would silently count as two
+            // different "people."
+            capturedBy: resolveMyActorId(auth.currentUser),
             startedAt: startedAt || Date.now(),
             endedAt: endedAt || Date.now(),
             durationMs:

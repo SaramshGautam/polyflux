@@ -17,6 +17,7 @@ import {
   scheduleUpdateShape,
   endEditSession,
   ensureImageInStorageAndGetUrl,
+  resolveMyActorId,
 } from "../utils/registershapes";
 
 import { useParams } from "react-router-dom";
@@ -41,8 +42,11 @@ export default function CustomContextMenu({
 }) {
   const editor = useEditor();
   const currentUser = auth.currentUser;
-  const actorId =
-    auth.currentUser?.displayName || auth.currentUser?.uid || "anon";
+  // Canonical identity (see resolveMyActorId's doc comment) — this is the
+  // exact string tagged as `actor` on every move this user makes, so it
+  // must match whatever CollaborativeWhiteboard.js compares against for
+  // private-nudge targeting.
+  const actorId = resolveMyActorId(auth.currentUser);
   const actorUid = auth.currentUser?.uid || null;
 
   const userIdFromAuth =

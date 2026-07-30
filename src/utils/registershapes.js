@@ -1706,6 +1706,32 @@ function resolveActorKey(userId) {
   return String(userId || "unknown");
 }
 
+/**
+ * Single canonical "who am I" resolution for Firebase auth users.
+ *
+ * BUG FIX: this used to be computed independently in two places with two
+ * DIFFERENT fallback chains — CustomContextMenu.js used
+ * `displayName || uid || "anon"` (the value actually written as the
+ * `actor` on every move a user makes, via resolveActorKey above), while
+ * CollaborativeWhiteboard.js used `displayName || email || "anon"` for
+ * "is this trigger meant for me" self-comparison. For any user without a
+ * displayName set, those two chains land on two DIFFERENT strings (their
+ * uid vs. their email) for the same person — meaning a private,
+ * specifically-targeted nudge (see triggers_engine.py's `target_actor`)
+ * would silently never match the person it was actually meant for. Both
+ * call sites now import and use this one function instead, so "the
+ * string tagged on my moves" and "the string I compare myself against"
+ * are always the exact same value.
+ */
+export function resolveMyActorId(currentUser) {
+  return String(
+    currentUser?.displayName ||
+      currentUser?.email ||
+      currentUser?.uid ||
+      "anon"
+  );
+}
+
 /** Best-effort tags from text */
 function tagify(text) {
   if (!text) return [];

@@ -59,6 +59,28 @@ function b64ToBlob(b64, mime = "image/png") {
 
 const safe = (s = "") => s.replace(/[^\w.@-]/g, "_");
 
+// canvasId is a flat "<classroom>_<project>_<team>" string; this mirrors
+// logBotEvent's toCanvasPath below since both need to turn it back into a
+// Firestore path segment set. Shared here so the chip follow-through
+// broadcasts (see handleChipClick's "Do a quick round" / "Create a shared
+// prompt" branches) write to the exact same classrooms/.../teams/{team}
+// path CollaborativeWhiteboard.js reads its "nudges" collection from.
+function parseCanvasId(flatId) {
+  const raw = String(flatId || "").trim();
+  const parts = raw.split("_");
+  const classroom = parts[0] || "unknown";
+  const team = parts.length >= 2 ? parts[parts.length - 1] : "unknown";
+  const project =
+    parts.length >= 3 ? parts.slice(1, -1).join("_") : "unknown";
+  return { classroom, project, team };
+}
+
+// The two participation_imbalance_group chips that now DO something
+// concrete instead of just replying in chat — see handleChipClick.
+const QUICK_ROUND_CHIP = "Do a quick round: each person adds 1 idea";
+const SHARED_PROMPT_CHIP = "Create a shared prompt for everyone to react to";
+const QUICK_ROUND_ACK_CHIP = "I added mine ✓";
+
 async function uploadB64ToFirebase({ storage, canvasId, b64, idx = 0 }) {
   const auth = getAuth();
   if (!auth.currentUser) {
@@ -240,6 +262,15 @@ function getNudgeHeader({ phase, triggerId, triggerLabel }) {
     return "One voice is dominating. Invite quieter input.";
   }
 
+  // Facilitation activities started via a chip follow-through (see
+  // handleChipClick's QUICK_ROUND_CHIP / SHARED_PROMPT_CHIP branches)
+  if (t === "quick_round_activity") {
+    return "Quick round in progress — add your idea!";
+  }
+  if (t === "shared_prompt_activity") {
+    return "A shared prompt was just posted for the group.";
+  }
+
   // -----------------------
   // Fallback
   // -----------------------
@@ -301,6 +332,11 @@ const ChatBot = ({
   const [phaseTheme, setPhaseTheme] = useState("neutral");
   const lastExternalTriggerRef = useRef({ key: null, time: 0 });
   const EXTERNAL_TRIGGER_DEDUPE_MS = 2000;
+  // Set while we're waiting for the user's next typed message to become
+  // the broadcast text for "Create a shared prompt for everyone to react
+  // to" (see handleChipClick / handleSend) — lets that chip reuse the
+  // existing chat input instead of a separate modal.
+  const pendingSharedPromptRef = useRef(false);
   const shellThemeTokenRef = useRef(0);
   const shellThemeTimeoutRef = useRef(null);
 
@@ -671,7 +707,105 @@ const ChatBot = ({
     }
   }, [forceOpen]);
 
+  // Broadcasts a real, structured activity to every connected participant
+  // by reusing the SAME Firestore "nudges" collection + onSnapshot
+  // listener CollaborativeWhiteboard.js already built for public-scope
+  // triggers (see the trigger-chatbot dispatch there). Writing here is
+  // enough for every other client to render it — this component doesn't
+  // have className/projectName/teamName as separate props, only the flat
+  // canvasId, so parseCanvasId reconstructs the same path segments.
+  const broadcastActivityNudge = async (trigger) => {
+    const { classroom, project, team } = parseCanvasId(canvasId);
+    const nudgesRef = collection(
+      db,
+      "classrooms",
+      classroom,
+      "Projects",
+      project,
+      "teams",
+      team,
+      "nudges"
+    );
+    const auth = getAuth();
+    await addDoc(nudgesRef, {
+      trigger,
+      tailShapeIds: [],
+      metrics: null,
+      publishedBy: auth.currentUser?.uid || "anon",
+      createdAt: serverTimestamp(),
+      expiresAt: Date.now() + 180_000,
+    });
+  };
+
   const handleChipClick = async (chip, roleType, nudgeMsg) => {
+    // --- Facilitation chips that DO something concrete instead of just
+    // replying in chat (see triggers_engine.py's participation_imbalance_
+    // group trigger, and the design note there about why these two
+    // specific chips exist) ---
+    if (chip === QUICK_ROUND_CHIP) {
+      await logBotEvent("chip_click", {
+        chip: redactText(chip, 300),
+        role: String(roleType || "").toLowerCase(),
+        triggerId: nudgeMsg?.meta?.triggerId || null,
+      });
+      const roundMessages = [...messages, { sender: "user", text: chip }];
+      setMessages(roundMessages);
+      try {
+        await broadcastActivityNudge({
+          id: "quick_round_activity",
+          scope: "public",
+          role: "communicator",
+          label: "Quick round",
+          user_text:
+            "🎯 Quick round! Everyone, take a moment to add one idea to the board.",
+          chips: [QUICK_ROUND_ACK_CHIP],
+        });
+        setMessages([
+          ...roundMessages,
+          {
+            sender: "bot",
+            text: "Round started — everyone else in the session just got this prompt too. Add your own idea, then let us know:",
+            chips: [QUICK_ROUND_ACK_CHIP],
+          },
+        ]);
+      } catch (e) {
+        console.error("Failed to broadcast quick round:", e);
+        setMessages([
+          ...roundMessages,
+          { sender: "bot", text: "Couldn't start the round — please try again." },
+        ]);
+      }
+      return;
+    }
+
+    if (chip === QUICK_ROUND_ACK_CHIP) {
+      await logBotEvent("chip_click", { chip: redactText(chip, 300) });
+      setMessages([
+        ...messages,
+        { sender: "user", text: chip },
+        { sender: "bot", text: "Nice — noted! 🙌" },
+      ]);
+      return;
+    }
+
+    if (chip === SHARED_PROMPT_CHIP) {
+      await logBotEvent("chip_click", {
+        chip: redactText(chip, 300),
+        role: String(roleType || "").toLowerCase(),
+        triggerId: nudgeMsg?.meta?.triggerId || null,
+      });
+      pendingSharedPromptRef.current = true;
+      setMessages([
+        ...messages,
+        { sender: "user", text: chip },
+        {
+          sender: "bot",
+          text: "What should the shared prompt be? Type it below and send it — I'll share it with everyone in the session.",
+        },
+      ]);
+      return;
+    }
+
     await logBotEvent("chip_click", {
       chip: redactText(chip, 300),
       role: String(roleType || "").toLowerCase(),
@@ -914,6 +1048,13 @@ const ChatBot = ({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             episode_id: episodeId,
+            // Real per-person identity of whoever clicked "analyze" —
+            // user_id is now resolveMyActorId(auth.currentUser) at the
+            // call site (CollaborativeWhiteboard.js), the same string
+            // tagged on this person's own moves, so the backend can
+            // deliver (or queue, see app.py's _queue_pending_nudge) a
+            // private trigger to the right person.
+            actor_id: user_id,
             shapes: hasShapes ? shapes : [],
             // Real interaction-event stream, preferred by the backend
             // over reconstructing moves from `shapes` when present (see
@@ -1199,6 +1340,41 @@ const ChatBot = ({
 
   const handleSend = async () => {
     if (!userInput.trim()) return;
+
+    // Follow-through for the "Create a shared prompt for everyone to
+    // react to" chip (see handleChipClick) — the NEXT message the user
+    // sends becomes the broadcast prompt instead of going to the AI.
+    if (pendingSharedPromptRef.current) {
+      pendingSharedPromptRef.current = false;
+      const promptText = userInput.trim();
+      const sentMessages = [...messages, { sender: "user", text: promptText }];
+      setMessages(sentMessages);
+      setUserInput("");
+      try {
+        await broadcastActivityNudge({
+          id: "shared_prompt_activity",
+          scope: "public",
+          role: "communicator",
+          label: "Shared prompt",
+          user_text: `📢 Shared prompt from the group: "${promptText}" — what do you think?`,
+          chips: [],
+        });
+        setMessages([
+          ...sentMessages,
+          {
+            sender: "bot",
+            text: "Shared with everyone in the session.",
+          },
+        ]);
+      } catch (e) {
+        console.error("Failed to broadcast shared prompt:", e);
+        setMessages([
+          ...sentMessages,
+          { sender: "bot", text: "Couldn't share that — please try again." },
+        ]);
+      }
+      return;
+    }
 
     const context = gatherContextFromClips(clipNotes);
     const newMessages = [

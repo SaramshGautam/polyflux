@@ -60,7 +60,7 @@ import { AudioShapeUtil } from "../shapes/AudioShapeUtil";
 import { PdfShapeUtil } from "../shapes/Pdfshapeutil";
 import { MicrophoneTool } from "../tools/MicrophoneTool";
 import CustomActionsMenu from "./CustomActionsMenu";
-import { upsertImageUrl } from "../utils/registershapes";
+import { upsertImageUrl, resolveMyActorId } from "../utils/registershapes";
 import { createToggleRecorder } from "../utils/audioRecorder";
 import { useCanvasActionHistory } from "./useCanvasActionHistory";
 import RobotDock from "./RobotDock";
@@ -715,8 +715,12 @@ const CollaborativeWhiteboard = () => {
 
   const actorIdRef = useRef("anon");
   useEffect(() => {
-    actorIdRef.current =
-      auth.currentUser?.displayName || auth.currentUser?.email || "anon";
+    // BUG FIX: see resolveMyActorId's doc comment in registershapes.js —
+    // this used to be a separate displayName||email chain that could
+    // disagree with the displayName||uid chain used to tag this user's
+    // own moves, silently breaking target_actor comparisons for anyone
+    // without a displayName set.
+    actorIdRef.current = resolveMyActorId(auth.currentUser);
   }, []);
 
   const stampingRef = useRef(false);
@@ -2408,7 +2412,23 @@ const CollaborativeWhiteboard = () => {
       }
 
       const payload = {
-        canvasId: `${className}_${projectName}_${teamName}`,
+        // BUG FIX: this used to be sent as "canvasId", a key app.py's
+        // /analyze never reads (it only looks at "episode_id") — meaning
+        // this whole proactive/automatic path was silently defaulting
+        // EVERY team to the same "TeamRoadTrip" episode bucket, unlike
+        // ChatBot.js's manual-button analyze call, which already sent
+        // episode_id correctly. That collision would have undermined
+        // per-team cooldown/dedupe state and, now, the per-target pending-
+        // nudge queue (see app.py's _queue_pending_nudge) — two different
+        // teams' private nudges could otherwise land in the same bucket.
+        episode_id: `${className}_${projectName}_${teamName}`,
+        // Real per-person identity of whoever's browser is making this
+        // call (see resolveMyActorId) — lets the backend deliver a
+        // private, specifically-targeted trigger (target_actor) to the
+        // right participant instead of whichever client's poll wins the
+        // race, and lets it queue the nudge for the real target instead
+        // of discarding it when this client isn't the one.
+        actor_id: actorIdRef.current,
         shapes: shapesForAnalysis || [],
         // Real interaction-event stream (see the export_buffer listener
         // above) — the backend prefers this over reconstructing moves
@@ -2500,6 +2520,23 @@ const CollaborativeWhiteboard = () => {
       const text = (trigger?.user_text || "").trim();
       const chips = Array.isArray(trigger?.chips) ? trigger.chips : [];
       const scope = trigger?.scope ?? "public";
+
+      // BUG FIX: a private trigger used to show up on whichever client
+      // happened to be the one that ran /analyze and got the hit — not
+      // necessarily the person it was actually about (e.g.
+      // participation_imbalance_group is meant for the most-active
+      // participant, see triggers_engine.py's target_actor). If the
+      // backend named a specific target and it isn't me, suppress this
+      // nudge entirely on this client rather than showing it to the
+      // wrong person. No target_actor (e.g. long_lull, which has no
+      // single "who" to target) keeps today's behavior: whoever's client
+      // sees it, sees it.
+      if (scope !== "public" && trigger.target_actor) {
+        const myActorId = resolveMyActorId(auth.currentUser);
+        if (myActorId !== trigger.target_actor) {
+          return;
+        }
+      }
 
       setPhaseTailShapeIds(tailShapeIds || []);
       setCurrentPhaseDetail(metrics || null);
@@ -3206,9 +3243,13 @@ const CollaborativeWhiteboard = () => {
             setMessages={setMessages}
             externalMessages={externalMessages}
             toggleSidebar={handleToggleSidebar}
-            user_id={
-              auth.currentUser?.displayName || auth.currentUser?.email || "anon"
-            }
+            // BUG FIX: this used to be its own displayName||email chain
+            // (no uid fallback), a third variant of the same identity
+            // mismatch resolveMyActorId's doc comment describes — for a
+            // user with neither set, this would resolve to "anon" while
+            // everywhere else resolved their uid, breaking any actor_id
+            // comparison (e.g. app.py's target_actor delivery) for them.
+            user_id={resolveMyActorId(auth.currentUser)}
             canvasId={`${className}_${projectName}_${teamName}`}
             role={"catalyst"}
             targets={selectedTargets}
@@ -3246,9 +3287,11 @@ const CollaborativeWhiteboard = () => {
           setMessages={setMessages}
           canvasId={`${className}_${projectName}_${teamName}`}
           role="catalyst"
-          user_id={
-            auth.currentUser?.displayName || auth.currentUser?.email || "anon"
-          }
+          // BUG FIX: see resolveMyActorId's doc comment — this used to be
+          // a separate displayName||email chain (no uid fallback) that
+          // could disagree with the identity used elsewhere for the same
+          // person.
+          user_id={resolveMyActorId(auth.currentUser)}
           targets={selectedTargets}
           params={{}}
           shapes={shapesForAnalysis}
