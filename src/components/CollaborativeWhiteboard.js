@@ -587,11 +587,18 @@ const CollaborativeWhiteboard = () => {
   const [robotSrc, setRobotSrc] = useState(DefaultMp4);
   const [robotLoop, setRobotLoop] = useState(true);
   const [robotPhase, setRobotPhase] = useState(null);
-  const ROBOT_GAP_PX = 10;
+  const ROBOT_GAP_PX = 8;
   const [chatbotOpen, setChatbotOpen] = useState(false);
   const ROBOT_SIZE = 50;
 
   const [robotPosition, setRobotPosition] = useState({ left: 16, bottom: 158 });
+  // The bottom nav/zoom panel's own top edge (the same element the robot
+  // dock already positions itself above — see the ResizeObserver below).
+  // Passed to ChatBot as part of dockAnchor so the chat window can clamp
+  // itself above this panel too, instead of guessing a fixed pixel
+  // margin from the bottom of the viewport (see computePositionBesideDock
+  // in ChatBot.js).
+  const [navPanelTop, setNavPanelTop] = useState(null);
 
   const actorLabelById = useMemo(() => {
     const m = {};
@@ -663,6 +670,7 @@ const CollaborativeWhiteboard = () => {
       const safeTop = Math.max(8, top);
 
       setRobotPosition({ left: safeLeft, top: safeTop });
+      setNavPanelTop(Math.round(rect.top));
     };
 
     const bind = () => {
@@ -2776,14 +2784,14 @@ const CollaborativeWhiteboard = () => {
 
       return (
         <DefaultToolbar {...props}>
-          <button
+          {/* <button
             type="button"
             className="tlui-button tlui-button--icon"
             title="Add PDF"
             onClick={() => pdfInputRef.current?.click()}
           >
             <FontAwesomeIcon icon={faFilePdf} style={{ fontSize: 16 }} />
-          </button>
+          </button> */}
 
           <DefaultToolbarContent />
         </DefaultToolbar>
@@ -3258,6 +3266,19 @@ const CollaborativeWhiteboard = () => {
             moves={movesForAnalysis}
             forceOpen={chatbotOpen}
             onClose={() => setChatbotOpen(false)}
+            // Lets the chat window open right beside the robot dock
+            // instead of its old hardcoded bottom-right-of-screen spot
+            // (see ChatBot.js's computePositionBesideDock). robotPosition
+            // already tracks the dock's live on-screen left/top via the
+            // ResizeObserver above. avoidBelowY is the bottom nav/zoom
+            // panel's own top edge, so the chat window can clamp itself
+            // to stay above that panel (same thing the dock itself
+            // already does) instead of guessing a fixed bottom margin.
+            dockAnchor={{
+              ...robotPosition,
+              size: ROBOT_SIZE,
+              avoidBelowY: navPanelTop,
+            }}
             onNudgeComputed={({
               tailShapeIds,
               currentPhase,

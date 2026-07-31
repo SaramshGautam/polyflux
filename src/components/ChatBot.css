@@ -612,7 +612,12 @@
 
 .chatbot-input button {
   padding: 9px 16px;
-  background: var(--pf-accent);
+  /* Matches the navbar's background color / the chat header's default
+     (neutral) top-bar color — see .chatbot-phase-neutral .chatbot-header
+     above and --nb-bg in components/navbar/Navbar.css — instead of the
+     unrelated purple accent, so the Send button reads as part of the
+     same UI. */
+  background: #232733;
   color: #ffffff;
   border: none;
   border-radius: var(--pf-radius-pill);
@@ -624,7 +629,7 @@
 }
 
 .chatbot-input button:hover {
-  background: var(--pf-accent-strong);
+  background: #363c4b;
   transform: translateY(-1px);
 }
 
@@ -793,7 +798,13 @@
      --------------------------------------------------------- */
 
 .chatbot-phase-neutral .chatbot-header {
-  background: linear-gradient(135deg, var(--pf-accent), #8a7ff0 55%, #a48ce8);
+  /* Matches the navbar's own background color (--nb-bg in
+     components/navbar/Navbar.css) so the chat window's default-state top
+     bar reads as part of the same UI instead of a mismatched purple
+     accent. Hardcoded (not a shared CSS var) since Navbar.css scopes
+     --nb-bg to .navbar rather than :root — keep this in sync with that
+     value if it ever changes. */
+  background: #232733;
 }
 .chatbot-phase-divergent .chatbot-header {
   background: linear-gradient(135deg, #2f6fed, #3fa9f5);

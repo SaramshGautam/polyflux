@@ -70,9 +70,85 @@ function parseCanvasId(flatId) {
   const parts = raw.split("_");
   const classroom = parts[0] || "unknown";
   const team = parts.length >= 2 ? parts[parts.length - 1] : "unknown";
-  const project =
-    parts.length >= 3 ? parts.slice(1, -1).join("_") : "unknown";
+  const project = parts.length >= 3 ? parts.slice(1, -1).join("_") : "unknown";
   return { classroom, project, team };
+}
+
+// BUG FIX (user report): the chat window used to always open pinned to
+// the bottom-right corner of the screen (see the `position` useState
+// default below), regardless of where the robot dock the user actually
+// clicked to open it was. That felt disconnected — clicking a button in
+// one place and having a panel appear somewhere unrelated. This computes
+// a position right beside the dock instead, given its live on-screen
+// rect (see CollaborativeWhiteboard.js's robotPosition/ROBOT_SIZE,
+// passed through as the `dockAnchor` prop).
+const CHAT_WINDOW_WIDTH = 400;
+const CHAT_WINDOW_HEIGHT = 500;
+const DOCK_CHAT_GAP_PX = 14;
+
+function computePositionBesideDock(anchor) {
+  if (!anchor) return null;
+
+  const { left, right, top, bottom, size = 50, avoidBelowY } = anchor;
+  const viewportW = window.innerWidth;
+  const viewportH = window.innerHeight;
+
+  // RobotDock (and CollaborativeWhiteboard's robotPosition state) uses
+  // the same left/right/top/bottom convention as CSS `position: fixed` —
+  // only one of each pair is normally set. Resolve to an absolute
+  // left/top so we can do arithmetic regardless of which one was given.
+  const ancLeft =
+    typeof left === "number"
+      ? left
+      : typeof right === "number"
+      ? viewportW - right - size
+      : 16;
+
+  const ancTop =
+    typeof top === "number"
+      ? top
+      : typeof bottom === "number"
+      ? viewportH - bottom - size
+      : Math.max(8, viewportH - size - 16);
+
+  // Prefer opening to the right of the dock (matches how it visually
+  // reads: dock, then chat beside it). If that would push the window
+  // past the right edge of the screen, open to the left of the dock
+  // instead.
+  let x = ancLeft + size + DOCK_CHAT_GAP_PX;
+  if (x + CHAT_WINDOW_WIDTH > viewportW - 8) {
+    x = ancLeft - CHAT_WINDOW_WIDTH - DOCK_CHAT_GAP_PX;
+  }
+  x = Math.max(8, Math.min(x, viewportW - CHAT_WINDOW_WIDTH - 8));
+
+  // BUG FIX (user report): the window was landing lower than intended —
+  // it was clamping only against the raw viewport bottom (8px margin),
+  // which ignores that tldraw's own bottom nav/zoom panel (the same
+  // element the dock positions itself above — see
+  // CollaborativeWhiteboard.js's [data-navpanel="true"] tracking) sits in
+  // that space too, so the window ended up overlapping/crowding it
+  // instead of sitting a clean few pixels above it. `avoidBelowY` is that
+  // panel's real live top edge; clamp the window's BOTTOM edge to stay
+  // above it (with a small gap) instead of guessing a fixed pixel margin
+  // from the raw viewport height. Falls back to the old viewport-relative
+  // clamp when avoidBelowY isn't available (e.g. nav panel not mounted
+  // yet).
+  const maxBottom =
+    typeof avoidBelowY === "number"
+      ? avoidBelowY - DOCK_CHAT_GAP_PX
+      : viewportH - 8;
+
+  // Manual fine-tune knob: shift the final vertical position by this many
+  // pixels (negative = up, positive = down) without changing the
+  // underlying anchor/clamp logic above.
+  const VERTICAL_OFFSET_PX = -50;
+
+  const y = Math.max(
+    8,
+    Math.min(ancTop, maxBottom - CHAT_WINDOW_HEIGHT) + VERTICAL_OFFSET_PX
+  );
+
+  return { x, y };
 }
 
 // The two participation_imbalance_group chips that now DO something
@@ -317,6 +393,13 @@ const ChatBot = ({
   onTriggerFired,
   forceOpen = false,
   onClose,
+  // Live on-screen rect of the robot dock (see RobotDock.js /
+  // CollaborativeWhiteboard.js's robotPosition + ROBOT_SIZE), used so the
+  // chat window opens right beside the dock instead of its old hardcoded
+  // bottom-right-of-screen default. Shape: { left?, right?, top?, bottom?,
+  // size } — same left/right/top/bottom convention RobotDock itself uses
+  // (only one of left/right and one of top/bottom will typically be set).
+  dockAnchor = null,
 }) => {
   const [userInput, setUserInput] = useState("");
   const [isOpen, setIsOpen] = useState(false);
@@ -435,7 +518,17 @@ const ChatBot = ({
   };
 
   useEffect(() => {
-    if (forceOpen) setIsOpen(true);
+    if (forceOpen) {
+      setIsOpen(true);
+      // Snap to beside the robot dock every time it's opened this way
+      // (i.e. by clicking the dock — see CollaborativeWhiteboard.js's
+      // onOpenChat/chatbotOpen, the only thing that drives forceOpen).
+      // The user can still drag it elsewhere afterward; this just fixes
+      // where it lands by default instead of the old fixed bottom-right
+      // corner.
+      const besidePos = computePositionBesideDock(dockAnchor);
+      if (besidePos) setPosition(besidePos);
+    }
   }, [forceOpen]);
 
   useEffect(() => {
@@ -772,7 +865,10 @@ const ChatBot = ({
         console.error("Failed to broadcast quick round:", e);
         setMessages([
           ...roundMessages,
-          { sender: "bot", text: "Couldn't start the round — please try again." },
+          {
+            sender: "bot",
+            text: "Couldn't start the round — please try again.",
+          },
         ]);
       }
       return;
@@ -1010,7 +1106,11 @@ const ChatBot = ({
     // activity signal when we have it (a real count of discrete
     // interaction events), falling back to shapes.length — the previous
     // and only available proxy — when moves isn't populated yet.
-    const activityCount = hasMoves ? moves.length : hasShapes ? shapes.length : 0;
+    const activityCount = hasMoves
+      ? moves.length
+      : hasShapes
+      ? shapes.length
+      : 0;
 
     if (source === "auto") {
       const elapsed = now - (last.time || 0); // ms
