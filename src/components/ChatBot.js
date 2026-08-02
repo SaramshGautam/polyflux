@@ -18,7 +18,9 @@ import {
   faClockRotateLeft,
   faBolt,
   faChevronDown,
-  faBars,
+  faTableColumns,
+  faNoteSticky,
+  faFont,
 } from "@fortawesome/free-solid-svg-icons";
 
 function linkifyText(text) {
@@ -354,7 +356,7 @@ function getNudgeHeader({ phase, triggerId, triggerLabel }) {
   return `Noticing a pattern${nicePhase}. Want a quick next step?`;
 }
 
-const SimpleLinkPreview = ({ url }) => {
+const SimpleLinkPreview = ({ url, title }) => {
   if (!url) return null;
   let host = url;
   try {
@@ -368,10 +370,22 @@ const SimpleLinkPreview = ({ url }) => {
       rel="noopener noreferrer"
       title={url}
     >
-      <div className="chatbot-link-preview-title">{host}</div>
+      {/* title comes from the backend's web_search "sites" list (the
+          model's own citation title) when present — falls back to the
+          bare hostname for the older single-preview-link usage. */}
+      <div className="chatbot-link-preview-title">{title || host}</div>
       <div className="chatbot-link-preview-url">{url}</div>
     </a>
   );
+};
+
+// mode -> small badge shown above a bot reply's body, so it's obvious at a
+// glance which context actually answered (see the /api/chatgpt-helper
+// three-mode contract: "web_search" | "chatgpt_text" | "chatgpt_image").
+const MODE_BADGES = {
+  web_search: { icon: "🌐", label: "Web Search" },
+  chatgpt_image: { icon: "🎨", label: "ChatGPT" },
+  chatgpt_text: { icon: "✨", label: "ChatGPT" },
 };
 
 const ChatBot = ({
@@ -410,6 +424,20 @@ const ChatBot = ({
     x: window.innerWidth - 400 - 20,
     y: window.innerHeight - 540 - 20,
   });
+  // BUG FIX (user report): resizing the chat window "relapsed back to
+  // original size". Cause — the <Rnd> below was passed a hardcoded
+  // literal `size={{ width: 400, height: 500 }}` instead of state. A
+  // literal object makes Rnd a *controlled* component for size, so on
+  // every re-render (which happens constantly — new message, loading
+  // toggling, etc.) it snapped straight back to 400x500, undoing
+  // whatever the user had just dragged it to. Tracking size in state
+  // (like position already was) and feeding it back via onResizeStop
+  // makes a resize stick while the window stays open — and the
+  // forceOpen effect below explicitly resets it back to this default
+  // every time the chat is reopened (e.g. by clicking the robot dock),
+  // so a resize only persists for that one open session, not forever.
+  const DEFAULT_RND_SIZE = { width: 400, height: 500 };
+  const [rndSize, setRndSize] = useState(DEFAULT_RND_SIZE);
   const [copiedKey, setCopiedKey] = useState(null);
   const [nudgesLoading, setNudgesLoading] = useState(false);
   const [phaseTheme, setPhaseTheme] = useState("neutral");
@@ -528,6 +556,20 @@ const ChatBot = ({
       // corner.
       const besidePos = computePositionBesideDock(dockAnchor);
       if (besidePos) setPosition(besidePos);
+
+      // BUG FIX (user report): a resize should only stick for the
+      // session it happened in — closing and reopening (always via this
+      // forceOpen path, the only way back in once closed) should restart
+      // from the original scale rather than carry the last resize
+      // forward indefinitely.
+      setRndSize(DEFAULT_RND_SIZE);
+    } else {
+      // Clicking the robot dock now toggles chatbotOpen in
+      // CollaborativeWhiteboard.js instead of only ever setting it true,
+      // so forceOpen going false is a real "close" signal, not just its
+      // default resting state — mirror what the in-widget X button
+      // already does locally.
+      setIsOpen(false);
     }
   }, [forceOpen]);
 
@@ -651,7 +693,19 @@ const ChatBot = ({
         phase, // optional
       } = detail;
 
-      setIsOpen(true);
+      // Proactive/public nudges are now surfaced first as a toast beside
+      // the robot dock (see CollaborativeWhiteboard's showDockToast) —
+      // this used to force the whole chat window open the instant a nudge
+      // arrived, which is exactly what the toast is meant to replace.
+      // Opening now happens only when the user clicks Accept on that
+      // toast (RobotDock's onAcceptToast -> setChatbotOpen(true) ->
+      // forceOpen below). Any other trigger source (explicit selection
+      // sends, "open chat for this shape", etc.) still opens immediately
+      // since those are direct user actions, not unprompted nudges.
+      const isProactiveNudge = source === "public-nudge" || source === "auto-nudge";
+      if (!isProactiveNudge) {
+        setIsOpen(true);
+      }
 
       if (position) {
         setPosition({ x: position.x, y: position.y });
@@ -1438,6 +1492,179 @@ const ChatBot = ({
     );
   };
 
+  // Shared by handleSend (a brand-new user message) and
+  // handleSwitchChipClick (re-asking the SAME message under a different
+  // forced mode) — this is everything from "call /api/chatgpt-helper"
+  // through "turn the response into a bot message", parameterized by
+  // whether a user bubble needs adding first and whether a force_mode
+  // override should be sent.
+  //
+  // Backend contract (see app.py's three-mode rewrite): every reply now
+  // carries `mode` ("web_search" | "chatgpt_text" | "chatgpt_image"), an
+  // optional `sites` array ({title, url} pairs from real web citations,
+  // web_search only), and a `suggested_switch` ({label, mode}) chip meant
+  // to offer the other side — clicking it is exactly what
+  // handleSwitchChipClick does, resending this same text with force_mode
+  // set to that chip's mode.
+  const sendChatMessage = async (
+    text,
+    { forceMode = null, appendUserBubble = false } = {}
+  ) => {
+    const context = gatherContextFromClips(clipNotes);
+
+    let baseMessages = messages;
+    if (appendUserBubble) {
+      baseMessages = [
+        ...messages,
+        {
+          sender: "user",
+          text,
+          image_urls: context.images,
+          attached_texts: context.texts,
+        },
+      ];
+      setMessages(baseMessages);
+    }
+
+    const history = buildHistoryForBackend(baseMessages);
+
+    setLoading(true);
+    try {
+      // Backend now requires a real Firebase ID token (see /api/chatgpt-helper
+      // server-side changes) instead of trusting a client-supplied user_id.
+      const auth = getAuth();
+      const idToken = await auth.currentUser?.getIdToken();
+
+      if (!idToken) {
+        setMessages([
+          ...baseMessages,
+          {
+            sender: "bot",
+            text: "You need to be signed in to chat with the AI.",
+          },
+        ]);
+        return;
+      }
+
+      const body = {
+        message: text,
+        canvas_id: canvasId,
+        role,
+        user_id,
+        targets: targets || [],
+        params: params || {},
+        context: {
+          images: context.images,
+          texts: context.texts,
+        },
+        history,
+      };
+      if (forceMode) body.force_mode = forceMode;
+
+      const response = await fetch(
+        "https://flask-app-jqwkqdscaq-uc.a.run.app/api/chatgpt-helper",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify(body),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        const errMsg =
+          response.status === 401
+            ? "You need to be signed in to chat with the AI."
+            : response.status === 429
+            ? "You're sending messages a bit too quickly — please wait a moment and try again."
+            : data?.error || "Something went wrong.";
+
+        setMessages([...baseMessages, { sender: "bot", text: errMsg }]);
+        return;
+      }
+
+      await logBotEvent("bot_reply", {
+        replyPreview: redactText(data.reply, 1000),
+        imageCount: Array.isArray(data.image_urls) ? data.image_urls.length : 0,
+        b64Count: Array.isArray(data.images_b64) ? data.images_b64.length : 0,
+        mode: data.mode || null,
+        sitesCount: Array.isArray(data.sites) ? data.sites.length : 0,
+        forcedMode: forceMode || null,
+      });
+
+      const hasSites = Array.isArray(data.sites) && data.sites.length > 0;
+
+      if (data.reply || hasSites) {
+        let imageUrlsFinal = [];
+
+        // 1) base64 route (AI-generated art, or web_search's real-photo
+        // grid — both come back the same way from the backend)
+        const b64s = data.images_b64 || data.image_b64;
+        if (Array.isArray(b64s) && b64s.length) {
+          try {
+            const firebaseUrls = await uploadManyB64ToFirebase(b64s, {
+              canvasId,
+              user_id,
+              storage,
+            });
+            imageUrlsFinal = firebaseUrls;
+          } catch (e) {
+            console.error("Uploading images failed", e);
+          }
+        }
+
+        // 2) URL route
+        const urls = data.image_urls;
+        if (!imageUrlsFinal.length && Array.isArray(urls) && urls.length) {
+          try {
+            // mirror to Firebase for durability + easier copying
+            const firebaseUrls = await mirrorAllImagesToFirebase(urls, {
+              canvasId,
+              user_id,
+            });
+            imageUrlsFinal = firebaseUrls;
+          } catch (e) {
+            console.error("Mirroring image_urls failed:", e);
+            imageUrlsFinal = urls; // fallback to original signed URLs
+          }
+        }
+
+        setMessages([
+          ...baseMessages,
+          {
+            sender: "bot",
+            text: formatBotReply(data.reply || ""),
+            image_urls: imageUrlsFinal,
+            previewUrl: extractFirstUrl(data.reply),
+            mode: data.mode || null,
+            sites: Array.isArray(data.sites) ? data.sites : [],
+            suggestedSwitch: data.suggested_switch || null,
+            // Stashed so the suggested_switch chip can resend this exact
+            // text later — see handleSwitchChipClick.
+            originalUserText: text,
+          },
+        ]);
+      } else {
+        setMessages([
+          ...baseMessages,
+          { sender: "bot", text: "Something went wrong." },
+        ]);
+      }
+    } catch (error) {
+      console.error(error);
+      setMessages([
+        ...baseMessages,
+        { sender: "bot", text: "Error connecting to server." },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSend = async () => {
     if (!userInput.trim()) return;
 
@@ -1476,149 +1703,39 @@ const ChatBot = ({
       return;
     }
 
+    const textToSend = userInput;
     const context = gatherContextFromClips(clipNotes);
-    const newMessages = [
-      ...messages,
-      {
-        sender: "user",
-        text: userInput,
-        image_urls: context.images,
-        attached_texts: context.texts,
-      },
-    ];
 
     await logBotEvent("send_message", {
-      text: redactText(userInput),
+      text: redactText(textToSend),
       hasImages: (context.images || []).length,
       hasTexts: (context.texts || []).length,
       targetsCount: (targets || []).length,
     });
 
-    const history = buildHistoryForBackend(newMessages);
-
-    setMessages(newMessages);
     setUserInput("");
-    setLoading(true);
+    await sendChatMessage(textToSend, { appendUserBubble: true });
+  };
 
-    try {
-      // Backend now requires a real Firebase ID token (see /api/chatgpt-helper
-      // server-side changes) instead of trusting a client-supplied user_id.
-      const auth = getAuth();
-      const idToken = await auth.currentUser?.getIdToken();
+  // Follow-through for a bot reply's "suggested_switch" chip (see the
+  // sendChatMessage doc comment above) — re-asks the SAME original
+  // question with force_mode set to whichever mode the chip points at, and
+  // does NOT add a new user bubble, since it's the same question, just
+  // answered a different way.
+  const handleSwitchChipClick = async (msg) => {
+    const target = msg?.suggestedSwitch;
+    if (!target?.mode || !msg?.originalUserText) return;
 
-      if (!idToken) {
-        setMessages([
-          ...newMessages,
-          {
-            sender: "bot",
-            text: "You need to be signed in to chat with the AI.",
-          },
-        ]);
-        return;
-      }
+    await logBotEvent("switch_chip_click", {
+      fromMode: msg?.mode || null,
+      toMode: target.mode,
+      label: redactText(target.label, 200),
+    });
 
-      const response = await fetch(
-        "https://flask-app-jqwkqdscaq-uc.a.run.app/api/chatgpt-helper",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${idToken}`,
-          },
-          body: JSON.stringify({
-            message: userInput,
-            canvas_id: canvasId,
-            role,
-            user_id,
-            targets: targets || [],
-            params: params || {},
-            context: {
-              images: context.images,
-              texts: context.texts,
-            },
-            history,
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        const errMsg =
-          response.status === 401
-            ? "You need to be signed in to chat with the AI."
-            : response.status === 429
-            ? "You're sending messages a bit too quickly — please wait a moment and try again."
-            : data?.error || "Something went wrong.";
-
-        setMessages([...newMessages, { sender: "bot", text: errMsg }]);
-        return;
-      }
-
-      await logBotEvent("bot_reply", {
-        replyPreview: redactText(data.reply, 1000),
-        imageCount: Array.isArray(data.image_urls) ? data.image_urls.length : 0,
-        b64Count: Array.isArray(data.images_b64) ? data.images_b64.length : 0,
-      });
-
-      if (data.reply) {
-        let imageUrlsFinal = [];
-
-        // 1) base64 route
-        const b64s = data.images_b64 || data.image_b64;
-        if (Array.isArray(b64s) && b64s.length) {
-          try {
-            const firebaseUrls = await uploadManyB64ToFirebase(b64s, {
-              canvasId,
-              user_id,
-              storage,
-            });
-            imageUrlsFinal = firebaseUrls;
-          } catch (e) {
-            console.error("Uploading images failed", e);
-          }
-        }
-
-        // 2) URL route
-        const urls = data.image_urls;
-        if (!imageUrlsFinal.length && Array.isArray(urls) && urls.length) {
-          try {
-            // mirror to Firebase for durability + easier copying
-            const firebaseUrls = await mirrorAllImagesToFirebase(urls, {
-              canvasId,
-              user_id,
-            });
-            imageUrlsFinal = firebaseUrls;
-          } catch (e) {
-            console.error("Mirroring image_urls failed:", e);
-            imageUrlsFinal = urls; // fallback to original signed URLs
-          }
-        }
-
-        setMessages([
-          ...newMessages,
-          {
-            sender: "bot",
-            text: formatBotReply(data.reply),
-            image_urls: imageUrlsFinal,
-            previewUrl: extractFirstUrl(data.reply),
-          },
-        ]);
-      } else {
-        setMessages([
-          ...newMessages,
-          { sender: "bot", text: "Something went wrong." },
-        ]);
-      }
-    } catch (error) {
-      console.error(error);
-      setMessages([
-        ...newMessages,
-        { sender: "bot", text: "Error connecting to server." },
-      ]);
-    } finally {
-      setLoading(false);
-    }
+    await sendChatMessage(msg.originalUserText, {
+      forceMode: target.mode,
+      appendUserBubble: false,
+    });
   };
 
   const toLines = (val) => {
@@ -1750,7 +1867,10 @@ const ChatBot = ({
     return m ? m[0] : null;
   };
 
-  const renderMessageText = (text) => {
+  // msgIdx (the message's index in the messages array) makes each list
+  // item's copy/add-as-note/add-as-text key globally unique across the
+  // whole conversation, not just within this one call.
+  const renderMessageText = (text, msgIdx = 0) => {
     const lines = toLines(text);
 
     // Simple fenced code block support ```...```
@@ -1765,13 +1885,59 @@ const ChatBot = ({
       const listKey = `list-${out.length}`;
 
       out.push(
-        <ul key={listKey} className="chatbot-list">
-          {listBuf.map((li, idx) => (
-            <li key={`${listKey}-li-${idx}`}>
-              {renderRichInline(li, `${listKey}-li-${idx}`)}
-            </li>
-          ))}
-        </ul>
+        <div key={listKey} className="chatbot-list">
+          {listBuf.map((item, i) => {
+            const itemBase = `${msgIdx}-${listKey}-${i}`;
+            const copyKey = `copy-${itemBase}`;
+            const noteKey = `note-${itemBase}`;
+            const textKey = `text-${itemBase}`;
+
+            return (
+              <div key={`${listKey}-li-${i}`} className="chatbot-list-item">
+                <span className="chatbot-list-item-marker">
+                  {item.marker}
+                </span>
+                <span className="chatbot-list-item-text">
+                  {renderRichInline(item.text, `${listKey}-li-${i}`)}
+                </span>
+
+                <div className="chatbot-list-item-actions">
+                  <button
+                    type="button"
+                    className="chatbot-list-item-btn"
+                    title="Copy"
+                    onClick={() => copyText(item.text, copyKey)}
+                  >
+                    <FontAwesomeIcon icon={faCopy} />
+                  </button>
+                  <button
+                    type="button"
+                    className="chatbot-list-item-btn"
+                    title="Add as note"
+                    onClick={() => addToCanvas("note", item.text, noteKey)}
+                  >
+                    <FontAwesomeIcon icon={faNoteSticky} />
+                  </button>
+                  <button
+                    type="button"
+                    className="chatbot-list-item-btn"
+                    title="Add as text"
+                    onClick={() => addToCanvas("text", item.text, textKey)}
+                  >
+                    <FontAwesomeIcon icon={faFont} />
+                  </button>
+                </div>
+
+                {copiedKey === copyKey && (
+                  <span className="chatbot-list-item-pill">Copied</span>
+                )}
+                {(copiedKey === noteKey || copiedKey === textKey) && (
+                  <span className="chatbot-list-item-pill">Added</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
       );
 
       listBuf = [];
@@ -1809,9 +1975,13 @@ const ChatBot = ({
         return;
       }
 
-      const bullet = line.match(/^\s*(?:-|\*|•)\s+(.*)$/);
-      if (bullet) {
-        listBuf.push(bullet[1]);
+      const ordered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
+      const bullet = !ordered && line.match(/^\s*(?:-|\*|•)\s+(.*)$/);
+      if (ordered || bullet) {
+        listBuf.push({
+          marker: ordered ? `${ordered[1]}.` : "•",
+          text: ordered ? ordered[2] : bullet[1],
+        });
         return;
       }
 
@@ -1964,6 +2134,30 @@ const ChatBot = ({
     await copyText(textToCopy, key);
   };
 
+  // Drops a single reply item onto the canvas as a "note" or "text"
+  // shape. ChatBot doesn't hold a live tldraw editor reference itself —
+  // CollaborativeWhiteboard.js does — so this just broadcasts, the same
+  // way chatbot-request-selection already does for the opposite
+  // direction (canvas -> chat). See CollaborativeWhiteboard.js's
+  // handleAddShapeFromChat listener for where the shape actually gets
+  // created.
+  const addToCanvas = async (kind, text, key) => {
+    const content = String(text || "").trim();
+    if (!content) return;
+    try {
+      window.dispatchEvent(
+        new CustomEvent("chatbot-add-shape", { detail: { kind, content } })
+      );
+      badgePing(key);
+      await logBotEvent(kind === "note" ? "add_as_note" : "add_as_text", {
+        key,
+        length: content.length,
+      });
+    } catch (e) {
+      console.error("Add to canvas failed:", e);
+    }
+  };
+
   const copyImage = async (url, key) => {
     try {
       let blob;
@@ -2018,9 +2212,9 @@ const ChatBot = ({
               <button
                 className="chatbot-header-btn"
                 onClick={() => toggleSidebar?.()}
-                title="Open chat history"
+                title="Open chat sidebar"
               >
-                <FontAwesomeIcon icon={faBars} />
+                <FontAwesomeIcon icon={faTableColumns} />
               </button>
             )}
 
@@ -2178,8 +2372,19 @@ const ChatBot = ({
                       <span className="chatbot-copied-pill">Copied</span>
                     )}
 
+                    {msg.mode && MODE_BADGES[msg.mode] && (
+                      <div
+                        className={`chatbot-mode-badge chatbot-mode-badge--${msg.mode}`}
+                      >
+                        <span aria-hidden="true">
+                          {MODE_BADGES[msg.mode].icon}
+                        </span>
+                        {MODE_BADGES[msg.mode].label}
+                      </div>
+                    )}
+
                     <div className="chatbot-message-body chatbot-card">
-                      {renderMessageText(msg.text)}
+                      {renderMessageText(msg.text, idx)}
                     </div>
 
                     {msg.previewUrl && (
@@ -2188,6 +2393,22 @@ const ChatBot = ({
                         style={{ marginTop: 8 }}
                       >
                         <SimpleLinkPreview url={msg.previewUrl} />
+                      </div>
+                    )}
+
+                    {/* Real web-search citations — the "sites" grid, see
+                        app.py's extract_web_citations. Rendered before the
+                        image grid so a web_search reply reads: text, then
+                        sources, then the photo grid. */}
+                    {Array.isArray(msg.sites) && msg.sites.length > 0 && (
+                      <div className="chatbot-sites-list">
+                        {msg.sites.map((s, i) => (
+                          <SimpleLinkPreview
+                            key={i}
+                            url={s.url}
+                            title={s.title}
+                          />
+                        ))}
                       </div>
                     )}
 
@@ -2248,6 +2469,21 @@ const ChatBot = ({
                           ))}
                         </div>
                       )}
+
+                    {/* "Do a web search instead?" / "Generate an image
+                        with ChatGPT instead?" — see sendChatMessage's doc
+                        comment and handleSwitchChipClick. */}
+                    {msg.suggestedSwitch && (
+                      <div className="chatbot-switch-row">
+                        <button
+                          type="button"
+                          className="chatbot-switch-chip"
+                          onClick={() => handleSwitchChipClick(msg)}
+                        >
+                          {msg.suggestedSwitch.label}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -2376,8 +2612,17 @@ const ChatBot = ({
         x: window.innerWidth - 400 - 20,
         y: window.innerHeight - 540 - 20,
       }}
-      size={{ width: 400, height: 500 }}
+      size={rndSize}
       onDragStop={(e, d) => setPosition({ x: d.x, y: d.y })}
+      onResizeStop={(e, direction, ref, delta, newPosition) => {
+        setRndSize({ width: ref.style.width, height: ref.style.height });
+        // Resizing from the top / top-left edges (the only handles
+        // enabled below) moves the box's x/y as it grows so the opposite
+        // (bottom-right) corner stays put — Rnd hands back the correct
+        // adjusted position here, so this must be applied too or the
+        // window would jump on the next render.
+        setPosition(newPosition);
+      }}
       dragHandleClassName="chatbot-drag"
       enableResizing={{
         topLeft: true,
@@ -2389,6 +2634,8 @@ const ChatBot = ({
         topRight: false,
         bottomLeft: false,
       }}
+      minWidth={320}
+      minHeight={360}
       maxWidth={600}
       maxHeight={800}
     >

@@ -213,6 +213,23 @@ function normalizeShapeId(id) {
   return id.startsWith("shape:") ? id : `shape:${id}`;
 }
 
+// Builds the same TipTap-style doc tldraw's own (unexported-from-here)
+// toRichText helper produces — { type: "doc", content: [paragraph, ...] }
+// — for note/text shape props.richText. Duplicated locally rather than
+// imported from @tldraw/tlschema (a transitive dep, not a direct one) to
+// avoid depending on an internal package path.
+function buildRichTextDoc(text) {
+  const lines = String(text || "").split("\n");
+  return {
+    type: "doc",
+    content: lines.map((line) =>
+      line
+        ? { type: "paragraph", content: [{ type: "text", text: line }] }
+        : { type: "paragraph" }
+    ),
+  };
+}
+
 function useShapeCreatedByMap(db, classroomId, projectId, teamName) {
   const [shapeActorIdByShapeId, setShapeActorIdByShapeId] = useState({});
 
@@ -721,6 +738,16 @@ const CollaborativeWhiteboard = () => {
 
   const triggerLoopTimerRef = useRef(null);
 
+  // Toast shown beside the robot dock whenever a new nudge arrives (see
+  // showDockToast below) — independent of the ChatBot window itself so a
+  // nudge is visible even when chat is closed. { id, text, chips, phase,
+  // meta, createdAt } or null once dismissed/expired.
+  const [dockToast, setDockToast] = useState(null);
+  const DOCK_TOAST_DURATION_MS = 15000;
+  const DOCK_SNOOZE_MS = 5 * 60 * 1000;
+  const dockToastTimerRef = useRef(null);
+  const dockSnoozeTimerRef = useRef(null);
+
   const actorIdRef = useRef("anon");
   useEffect(() => {
     // BUG FIX: see resolveMyActorId's doc comment in registershapes.js —
@@ -860,6 +887,146 @@ const CollaborativeWhiteboard = () => {
     },
     [revertRobotToDefault]
   );
+
+  // Read via ref (not as a showDockToast dependency) so showDockToast keeps
+  // a stable identity across chat open/close — putting chatbotOpen
+  // directly in its deps would change that identity, which would in turn
+  // force the Firestore nudge-listener effect below (which lists
+  // showDockToast as a dependency) to resubscribe every time the chat
+  // opens or closes, re-processing every still-live nudge doc as "added"
+  // and re-firing toasts/animations that already happened.
+  const chatbotOpenRef = useRef(chatbotOpen);
+  useEffect(() => {
+    chatbotOpenRef.current = chatbotOpen;
+  }, [chatbotOpen]);
+
+  const dismissDockToast = useCallback(() => {
+    if (dockToastTimerRef.current) {
+      clearTimeout(dockToastTimerRef.current);
+      dockToastTimerRef.current = null;
+    }
+    setDockToast(null);
+  }, []);
+
+  // Single entry point for "a new nudge just arrived" — called from both
+  // the public-nudge Firestore listener and pushNudgeToChatbot (the local
+  // /proactive trigger path) so the toast behaves the same regardless of
+  // which client produced the nudge. Deliberately independent of
+  // playTriggerAnimation: that drives the dock's video/ring, this drives
+  // the toast text + accept/reject/snooze UI beside it.
+  const showDockToast = useCallback(
+    ({ text, chips, phase, meta }) => {
+      // Skip the toast when the chat window is already open — the nudge
+      // message is landing directly in the visible conversation in that
+      // case, so a duplicate popup beside the dock would just be noise.
+      if (!text || chatbotOpenRef.current) return;
+      if (dockToastTimerRef.current) clearTimeout(dockToastTimerRef.current);
+      const id = `toast_${Date.now()}`;
+      setDockToast({
+        id,
+        text,
+        chips: Array.isArray(chips) ? chips : [],
+        phase: phase || null,
+        meta: meta || null,
+        createdAt: Date.now(),
+      });
+      dockToastTimerRef.current = setTimeout(() => {
+        setDockToast((cur) => (cur && cur.id === id ? null : cur));
+      }, DOCK_TOAST_DURATION_MS);
+    },
+    []
+  );
+
+  // Records what the user did with a dock toast (accept/reject/snooze) —
+  // same bot_logs collection ChatBot.js's own logBotEvent writes to
+  // (classrooms/{classroom}/Projects/{project}/teams/{team}/bot_logs), so
+  // this shows up alongside the rest of the nudge/chat activity log
+  // rather than a separate stream. Kept local to this file instead of
+  // reusing ChatBot's logBotEvent since that helper is defined inside
+  // ChatBot.js and isn't exported.
+  const logDockToastEvent = useCallback(
+    async (action, toastPayload) => {
+      try {
+        if (!className || !projectName || !teamName) return;
+        const col = collection(
+          db,
+          "classrooms",
+          className,
+          "Projects",
+          projectName,
+          "teams",
+          teamName,
+          "bot_logs"
+        );
+        await addDoc(col, {
+          event: "dock_toast_action",
+          createdAt: serverTimestamp(),
+          clientTs: Date.now(),
+          appUserId: resolveMyActorId(auth.currentUser),
+          firebaseUid: auth.currentUser?.uid || null,
+          payload: {
+            action, // "accept" | "reject" | "snooze"
+            triggerId: toastPayload?.meta?.triggerId || null,
+            phase: toastPayload?.phase || null,
+            source: toastPayload?.meta?.source || null,
+            textPreview: String(toastPayload?.text || "").slice(0, 300),
+          },
+        });
+      } catch (e) {
+        console.error("[dock-toast] log failed:", e);
+      }
+    },
+    [className, projectName, teamName]
+  );
+
+  const acceptDockToast = useCallback(
+    (toastPayload) => {
+      logDockToastEvent("accept", toastPayload);
+      dismissDockToast();
+      setChatbotOpen(true);
+    },
+    [dismissDockToast, logDockToastEvent]
+  );
+
+  const rejectDockToast = useCallback(
+    (toastPayload) => {
+      logDockToastEvent("reject", toastPayload);
+      dismissDockToast();
+    },
+    [dismissDockToast, logDockToastEvent]
+  );
+
+  // Snoozing dismisses the toast now and quietly re-shows the same nudge
+  // after a few minutes, rather than losing it outright — Reject is the
+  // "I don't want this" action, Snooze is "not right now".
+  const snoozeDockToast = useCallback(
+    (toastPayload) => {
+      logDockToastEvent("snooze", toastPayload);
+      if (dockToastTimerRef.current) {
+        clearTimeout(dockToastTimerRef.current);
+        dockToastTimerRef.current = null;
+      }
+      setDockToast((cur) => {
+        if (cur) {
+          if (dockSnoozeTimerRef.current)
+            clearTimeout(dockSnoozeTimerRef.current);
+          const { text, chips, phase, meta } = cur;
+          dockSnoozeTimerRef.current = setTimeout(() => {
+            showDockToast({ text, chips, phase, meta });
+          }, DOCK_SNOOZE_MS);
+        }
+        return null;
+      });
+    },
+    [showDockToast, logDockToastEvent]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (dockToastTimerRef.current) clearTimeout(dockToastTimerRef.current);
+      if (dockSnoozeTimerRef.current) clearTimeout(dockSnoozeTimerRef.current);
+    };
+  }, []);
 
   const handlePortalToggle = useCallback((landing) => {
     // Stash whatever view CanvasPortal was showing (or null, if it
@@ -1739,7 +1906,6 @@ const CollaborativeWhiteboard = () => {
     );
 
     const q = query(nudgesRef, orderBy("createdAt", "desc"));
-    const myUid = auth.currentUser?.uid;
     const SEEN_IDS = new Set();
 
     const unsub = onSnapshot(q, (snap) => {
@@ -1754,7 +1920,26 @@ const CollaborativeWhiteboard = () => {
 
         if (data.expiresAt && Date.now() > data.expiresAt) return;
 
-        if (data.publishedBy === myUid) return;
+        // BUG FIX (user report): the exact same nudge was appearing twice
+        // in chat. Root cause — this used to read `myUid` ONCE, at effect
+        // setup time, into a plain const. If Firebase auth hadn't
+        // resolved yet at that moment (auth.currentUser was still null),
+        // myUid got permanently baked in as undefined for the entire life
+        // of this listener, even after auth resolved moments later.
+        // Meanwhile publishPublicNudge always reads auth.currentUser?.uid
+        // fresh at write time, so once auth *did* resolve, publishedBy
+        // held the real uid — which no longer matched the stale
+        // (undefined) myUid here, so this self-filter silently stopped
+        // working. Result: the client that generated a public nudge saw
+        // it once immediately (pushNudgeToChatbot's direct
+        // trigger-chatbot dispatch) and a second time when its own
+        // Firestore write round-tripped back through this listener.
+        // Reading auth.currentUser?.uid fresh on every snapshot (it's a
+        // cheap property read, not an async call) instead of once up
+        // front fixes this regardless of when auth resolves.
+        if (data.publishedBy && data.publishedBy === auth.currentUser?.uid) {
+          return;
+        }
 
         const trigger = data.trigger || {};
         const text = (trigger.user_text || "").trim();
@@ -1772,6 +1957,20 @@ const CollaborativeWhiteboard = () => {
         if (text) setPhaseNudgePreview(text);
 
         if (text) {
+          showDockToast({
+            text,
+            chips,
+            phase: phaseName || TRIGGER_TO_PHASE[trigger.id] || null,
+            meta: {
+              trigger,
+              scope: "public",
+              triggerId: trigger.id,
+              tailShapeIds: data.tailShapeIds || [],
+              currentPhase: data.metrics || null,
+              source: "public-nudge",
+            },
+          });
+
           window.dispatchEvent(
             new CustomEvent("trigger-chatbot", {
               detail: {
@@ -1795,7 +1994,7 @@ const CollaborativeWhiteboard = () => {
     });
 
     return () => unsub();
-  }, [className, projectName, teamName, playTriggerAnimation]);
+  }, [className, projectName, teamName, playTriggerAnimation, showDockToast]);
 
   const actorsFromFS = useMemo(() => {
     const set = new Set();
@@ -1896,6 +2095,53 @@ const CollaborativeWhiteboard = () => {
         "chatbot-request-selection",
         handleRequestSelection
       );
+    };
+  }, [editorReady]);
+
+  // "Add as note" / "Add as text" on an individual reply item in
+  // ChatBot.js (see its addToCanvas) — ChatBot has no live editor
+  // reference of its own, so it broadcasts and this creates the actual
+  // shape, same pattern as chatbot-request-selection above but in the
+  // opposite direction (chat -> canvas instead of canvas -> chat).
+  useEffect(() => {
+    if (!editorReady) return;
+    const editor = editorInstance.current;
+    if (!editor) return;
+
+    const handleAddShapeFromChat = (e) => {
+      const { kind, content } = e.detail || {};
+      const text = String(content || "").trim();
+      if (!text || (kind !== "note" && kind !== "text")) return;
+
+      const bounds = editor.getViewportPageBounds();
+      // Small random offset so repeated adds don't stack exactly on top
+      // of one another and hide all but the last one.
+      const jitter = () => (Math.random() - 0.5) * 60;
+      const cx = (bounds.minX + bounds.maxX) / 2 + jitter();
+      const cy = (bounds.minY + bounds.maxY) / 2 + jitter();
+
+      const richText = buildRichTextDoc(text);
+
+      if (kind === "note") {
+        editor.createShape({
+          type: "note",
+          x: cx - 100,
+          y: cy - 100,
+          props: { richText },
+        });
+      } else {
+        editor.createShape({
+          type: "text",
+          x: cx - 130,
+          y: cy - 20,
+          props: { richText, autoSize: false, w: 260 },
+        });
+      }
+    };
+
+    window.addEventListener("chatbot-add-shape", handleAddShapeFromChat);
+    return () => {
+      window.removeEventListener("chatbot-add-shape", handleAddShapeFromChat);
     };
   }, [editorReady]);
 
@@ -2557,6 +2803,22 @@ const CollaborativeWhiteboard = () => {
       setIsPhasePulsing(true);
       playTriggerAnimation(trigger.id);
 
+      if (text) {
+        showDockToast({
+          text,
+          chips,
+          phase: phaseName || TRIGGER_TO_PHASE[trigger.id] || null,
+          meta: {
+            trigger,
+            scope,
+            triggerId: trigger.id,
+            tailShapeIds: tailShapeIds || [],
+            currentPhase: metrics || null,
+            source,
+          },
+        });
+      }
+
       if (source === "proactive" && text) {
         const now = Date.now();
         const lastAt = autoTriggerCooldownMapRef.current[trigger.id] || 0;
@@ -3205,8 +3467,17 @@ const CollaborativeWhiteboard = () => {
           show={true}
           position={robotPosition}
           size={ROBOT_SIZE}
-          onOpenChat={() => setChatbotOpen(true)}
+          // Toggle rather than always-open — clicking the dock while the
+          // chat is already open should close it (see ChatBot.js's
+          // forceOpen effect, which now reacts to this going false too).
+          onOpenChat={() => setChatbotOpen((prev) => !prev)}
           zIndex={10070}
+          toast={dockToast}
+          toastDurationMs={DOCK_TOAST_DURATION_MS}
+          bump={Boolean(dockToast)}
+          onAcceptToast={acceptDockToast}
+          onRejectToast={rejectDockToast}
+          onSnoozeToast={snoozeDockToast}
         />
 
         {/* History/Comments panel — previously rendered from inside

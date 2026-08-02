@@ -62,37 +62,53 @@ export function useProactiveNudges({
     const editor = editorRef?.current;
     if (!editor?.store?.listen) return;
 
-    const unlisten = editor.store.listen((entry) => {
-      const changes = entry?.changes;
-      if (!changes) return;
+    // BUG FIX (user report): nudges were firing almost immediately after
+    // opening the board, before the user had added anything themselves.
+    // Cause — this listener had no `{ scope: "user" }` filter (every other
+    // editor.store.listen(...) in this codebase does, e.g.
+    // CollaborativeWhiteboard.js's createdBy/updatedBy stamping effect),
+    // so it fired for EVERY store change: the initial tldraw-sync
+    // hydration that loads all of a team's existing shapes when the board
+    // first connects, AND every teammate's remote edits too — not just
+    // this browser's own actions. Loading a board that already has a few
+    // items on it, or simply having a teammate active at the same time,
+    // was enough to blow past minEvents on its own, well before this
+    // user touched the canvas. Scoping to "user" restricts bumpActivity
+    // to changes this client itself actually made.
+    const unlisten = editor.store.listen(
+      (entry) => {
+        const changes = entry?.changes;
+        if (!changes) return;
 
-      // tldraw gives { added: {id->rec}, updated: {...}, removed: {...} }
-      const added = changes.added || {};
-      const updated = changes.updated || {};
-      const removed = changes.removed || {};
+        // tldraw gives { added: {id->rec}, updated: {...}, removed: {...} }
+        const added = changes.added || {};
+        const updated = changes.updated || {};
+        const removed = changes.removed || {};
 
-      const isMeaningfulId = (id) => {
-        if (!id) return false;
-        // keep only content-ish records
-        return (
-          id.startsWith("shape:") ||
-          id.startsWith("asset:") ||
-          id.startsWith("binding:")
-        );
-      };
+        const isMeaningfulId = (id) => {
+          if (!id) return false;
+          // keep only content-ish records
+          return (
+            id.startsWith("shape:") ||
+            id.startsWith("asset:") ||
+            id.startsWith("binding:")
+          );
+        };
 
-      const countMeaningful = (obj) =>
-        Object.keys(obj).filter(isMeaningfulId).length;
+        const countMeaningful = (obj) =>
+          Object.keys(obj).filter(isMeaningfulId).length;
 
-      const total =
-        countMeaningful(added) +
-        countMeaningful(updated) +
-        countMeaningful(removed);
+        const total =
+          countMeaningful(added) +
+          countMeaningful(updated) +
+          countMeaningful(removed);
 
-      if (!total) return;
+        if (!total) return;
 
-      engineRef.current?.bumpActivity?.(total);
-    });
+        engineRef.current?.bumpActivity?.(total);
+      },
+      { scope: "user" }
+    );
 
     return () => {
       try {
