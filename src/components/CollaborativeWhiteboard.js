@@ -21,6 +21,8 @@ import {
   useEditor,
   useValue,
   createShapeId,
+  getEmbedInfo,
+  DEFAULT_EMBED_DEFINITIONS,
 } from "tldraw";
 import { useSync } from "@tldraw/sync";
 import "tldraw/tldraw.css";
@@ -649,17 +651,19 @@ const CollaborativeWhiteboard = () => {
       return actorLabelByIdRef.current?.[actorId] || actorId;
     };
 
-    const { NamedNote, NamedText, NamedImage } = createNamedShapeUtils({
-      getActorLabelForShape,
-    });
+    const { NamedNote, NamedText, NamedImage, NamedEmbed } =
+      createNamedShapeUtils({
+        getActorLabelForShape,
+      });
 
     return [
       ...defaultShapeUtils.filter(
-        (u) => !["note", "text", "image"].includes(u.type)
+        (u) => !["note", "text", "image", "embed"].includes(u.type)
       ),
       NamedNote,
       NamedText,
       NamedImage,
+      NamedEmbed,
       AudioShapeUtil,
       PdfShapeUtil,
     ];
@@ -3186,6 +3190,52 @@ const CollaborativeWhiteboard = () => {
               editor.registerExternalContentHandler(
                 "url",
                 async ({ point, url }) => {
+                  // BUG FIX (user report): pasting a link (e.g. via
+                  // Cmd+V rather than a drag/drop that has a cursor
+                  // position) crashed with "Cannot read properties of
+                  // undefined (reading 'x')" — point can be undefined for
+                  // some paste paths, but every shape-placement below
+                  // assumed it always existed. Falling back to the
+                  // current viewport's center (same thing tldraw's own
+                  // default handler does) instead of trusting point to
+                  // always be present.
+                  const safePoint =
+                    point ||
+                    (() => {
+                      const vb = editor.getViewportPageBounds();
+                      return {
+                        x: (vb.minX + vb.maxX) / 2,
+                        y: (vb.minY + vb.maxY) / 2,
+                      };
+                    })();
+
+                  // BUG FIX (user report): YouTube/Google Maps links used
+                  // to become real interactive embeds; this handler
+                  // (registered for ALL "url" content, replacing tldraw's
+                  // own default) never checked for that at all, so every
+                  // non-image link — including these — always fell
+                  // through to a plain bookmark card. Checking
+                  // getEmbedInfo first (the same lookup tldraw's built-in
+                  // "embed" shape and default url-handler use, against
+                  // its DEFAULT_EMBED_DEFINITIONS list — youtube,
+                  // google_maps, vimeo, figma, etc.) restores real embeds
+                  // for any recognized provider, before falling back to a
+                  // bookmark for everything else.
+                  const embedInfo = getEmbedInfo(DEFAULT_EMBED_DEFINITIONS, url);
+                  if (embedInfo) {
+                    const { definition, embedUrl } = embedInfo;
+                    const w = definition.width || 720;
+                    const h = definition.height || 500;
+                    editor.createShape({
+                      id: createShapeId(),
+                      type: "embed",
+                      x: safePoint.x - w / 2,
+                      y: safePoint.y - h / 2,
+                      props: { url: embedUrl, w, h },
+                    });
+                    return;
+                  }
+
                   const createBookmarkFallback = (bookmarkUrl) => {
                     // Bookmarks require a real http(s) URL — never pass a data:/blob: URI here
                     if (!/^https?:\/\//i.test(bookmarkUrl)) return;
@@ -3193,8 +3243,8 @@ const CollaborativeWhiteboard = () => {
                     editor.createShape({
                       id: shapeId,
                       type: "bookmark",
-                      x: point.x - 150,
-                      y: point.y - 100,
+                      x: safePoint.x - 150,
+                      y: safePoint.y - 100,
                       props: { url: bookmarkUrl, w: 300, h: 200 },
                     });
                   };
@@ -3247,8 +3297,8 @@ const CollaborativeWhiteboard = () => {
                     editor.createShape({
                       id: shapeId,
                       type: "image",
-                      x: point.x - dims.w / 4,
-                      y: point.y - dims.h / 4,
+                      x: safePoint.x - dims.w / 4,
+                      y: safePoint.y - dims.h / 4,
                       props: { assetId, w: dims.w / 2, h: dims.h / 2 },
                     });
                   };

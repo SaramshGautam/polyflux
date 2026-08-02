@@ -37,7 +37,21 @@ export function WithNameTag({ base, name, placement = "inside-bottom" }) {
         };
 
   return (
-    <div style={{ position: "relative" }}>
+    // BUG FIX (user report): the name tag and the embed frame itself were
+    // both mispositioned for map/YouTube embeds. Cause — tldraw's own
+    // embed component renders via HTMLContainer, which is
+    // position:absolute + inset:0, expecting its immediate parent to
+    // already be the shape's real, fully-sized box. This wrapper div
+    // used to have no explicit size (just position:relative), so it
+    // collapsed to a tiny auto height — the iframe filled that collapsed
+    // box instead of the shape's real height, and the "bottom: 6" tag
+    // ended up near the bottom of that shrunken box (visually mid-frame)
+    // instead of the shape's actual bottom edge. Image/note/text never
+    // showed this because their content sizes itself via normal layout,
+    // not absolute positioning relative to this wrapper. Explicit 100%
+    // width/height makes this div match its real parent (the shape's
+    // actual w x h box) again for every shape type, embeds included.
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
       {base}
       <div style={tagStyle} title={name}>
         {name}
