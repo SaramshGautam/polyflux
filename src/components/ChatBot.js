@@ -313,17 +313,17 @@ function getNudgeHeader({ phase, triggerId, triggerLabel }) {
   // Underexplored / stagnant divergence
   if (t === "stagnant_divergence" || t.includes("underexplored")) {
     if (p === "divergent") return "Ideas are repeating. Try a fresh direction.";
-    return "You may be circling the same ideas. Try a new angle.";
+    return "Circling around same ideas. Try a new angle.";
   }
 
   // Long-running divergence
   if (t === "long_running_divergence") {
-    return "Lots of ideas, little narrowing. Pick 2–3 to evaluate.";
+    return "Lots of new ideas. Pick few to develop on.";
   }
 
   // Early convergence
   if (t === "early_convergence") {
-    return "You're narrowing fast. Check for missing alternatives.";
+    return "Ideas are too concerntrated. Let's spread it out.";
   }
 
   // Refinement loop
