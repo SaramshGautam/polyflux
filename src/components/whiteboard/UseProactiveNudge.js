@@ -64,17 +64,26 @@ export function useProactiveNudges({
 
     // BUG FIX (user report): nudges were firing almost immediately after
     // opening the board, before the user had added anything themselves.
-    // Cause — this listener had no `{ scope: "user" }` filter (every other
-    // editor.store.listen(...) in this codebase does, e.g.
-    // CollaborativeWhiteboard.js's createdBy/updatedBy stamping effect),
-    // so it fired for EVERY store change: the initial tldraw-sync
-    // hydration that loads all of a team's existing shapes when the board
-    // first connects, AND every teammate's remote edits too — not just
-    // this browser's own actions. Loading a board that already has a few
-    // items on it, or simply having a teammate active at the same time,
-    // was enough to blow past minEvents on its own, well before this
-    // user touched the canvas. Scoping to "user" restricts bumpActivity
-    // to changes this client itself actually made.
+    // Cause — this listener had no filter, so it fired for EVERY store
+    // change: the initial tldraw-sync hydration that loads all of a
+    // team's existing shapes when the board first connects, AND every
+    // teammate's remote edits too — not just this browser's own actions.
+    //
+    // tldraw's store.listen has TWO independent filter keys:
+    //   - `source`: "user" | "remote" | "all" — local vs. synced changes
+    //   - `scope`:  "document" | "session" | "presence" | "all" — which
+    //     record *types* to include (shapes are "document"-scoped)
+    // This previously passed `{ scope: "user" }`, which is not a valid
+    // scope value. tldraw's internal dispatch only special-cases
+    // "document" and "session"; anything else (including "user") falls
+    // through to the "presence" branch, so this listener was silently
+    // being fed ONLY presence-scoped changes (cursors/viewport) and
+    // never shape/asset/binding records — meaning bumpActivity never
+    // fired for real edits, so /analyze was never called at all
+    // (confirmed via backend logs showing nothing after adding 6 items).
+    // The fix is `{ source: "user" }`: this is the filter that actually
+    // distinguishes local edits from remote/hydration ones; `scope`
+    // stays at its default "all" so document (shape) changes pass through.
     const unlisten = editor.store.listen(
       (entry) => {
         const changes = entry?.changes;
@@ -107,7 +116,7 @@ export function useProactiveNudges({
 
         engineRef.current?.bumpActivity?.(total);
       },
-      { scope: "user" }
+      { source: "user" }
     );
 
     return () => {

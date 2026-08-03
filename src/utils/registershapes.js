@@ -74,7 +74,7 @@ function scheduleImageUrlBackfill({ editor, userContext, shapeId, assetId }) {
 }
 
 const pickUrlFromProps = (props) => {
-  console.log("pickUrlFromProps props =", props);
+  // console.log("pickUrlFromProps props =", props);
   if (!props) return null;
   // Prefer 'src' for backward compatibility, then 'url', then 'imageUrl'
   return (
@@ -1725,10 +1725,7 @@ function resolveActorKey(userId) {
  */
 export function resolveMyActorId(currentUser) {
   return String(
-    currentUser?.displayName ||
-      currentUser?.email ||
-      currentUser?.uid ||
-      "anon"
+    currentUser?.displayName || currentUser?.email || currentUser?.uid || "anon"
   );
 }
 
