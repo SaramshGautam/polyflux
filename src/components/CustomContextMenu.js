@@ -178,7 +178,7 @@ export default function CustomContextMenu({
 
   async function makeHistoryEntry({
     userId,
-    verb, // 'added' | 'updated' | 'deleted'
+    verb, // 'added' | 'updated' | 'removed'
     shape,
     editor,
     userContext,
@@ -321,11 +321,24 @@ export default function CustomContextMenu({
 
       await deleteShape(deletedShapeId, userContext);
 
+      // BUG FIX (user report): moving a shape into your private canvas
+      // (via the portal) deletes it from the public store as an
+      // implementation detail of that move — this generic listener can't
+      // otherwise tell that apart from a real, intentional delete, so it
+      // used to log a misleading "<you> deleted a note" in the shared,
+      // team-visible history for something that just moved to a space
+      // nobody else can even see. CollaborativeWhiteboard.js's publish
+      // flow tags the shape's meta with suppressHistoryLog right before
+      // that delete specifically so this can be skipped — the Firestore
+      // doc cleanup above still always runs; only the history-row
+      // logging below is conditional.
+      if (removedRecord?.meta?.suppressHistoryLog) return;
+
       // Use the removed record's own snapshot (it still carries its type
       // and props even though the live shape is already gone from the
       // editor) instead of collapsing every delete to a generic "shape".
       // Without this, a deleted note/image/text showed up in history as
-      // "deleted a shape" — losing the modality info the History panel's
+      // "removed a shape" — losing the modality info the History panel's
       // icons and note/image previews rely on to tell delete actions apart.
       const deleted = {
         id: deletedShapeId,
@@ -333,9 +346,13 @@ export default function CustomContextMenu({
         props: removedRecord.props || {},
       };
 
+      // Verb changed from "deleted" to "removed" app-wide per user
+      // request — HistoryPanel.js's getActionCategory still recognizes
+      // both, so older history rows already written with "deleted" keep
+      // their delete icon/styling.
       const entry = await makeHistoryEntry({
         userId: actorId,
-        verb: "deleted",
+        verb: "removed",
         shape: deleted,
         editor,
         userContext,
@@ -347,7 +364,7 @@ export default function CustomContextMenu({
         teamName,
         actorId,
         actorUid,
-        verb: "deleted",
+        verb: "removed",
         shapeId: deletedShapeId,
         shapeType: deleted.type,
         textPreview: entry.text || "",

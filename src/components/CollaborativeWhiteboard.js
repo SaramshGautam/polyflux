@@ -82,7 +82,7 @@ import SessionSpeechCapture from "./whiteboard/SessionSpeechCapture";
 import CanvasPortal from "./canvashelpers/CanvasPortal";
 import PortalSuckOverlay from "./PortalSuckOverlay";
 import { restoreShapeMetadata } from "../utils/registershapes";
-import { logAction } from "../utils/actionLog";
+import { logBatchAction } from "../utils/actionLog";
 
 import {
   resolveImageUrl,
@@ -1241,40 +1241,66 @@ const CollaborativeWhiteboard = () => {
       // (either straight away below, or via the queued fallback), so
       // there's no need to wait on which path actually wrote them.
       //
-      // "brought over" + shapeType embedding "from the <source> canvas"
-      // reads naturally once the fixed "<who> <verb> <a/an> <shapeType>"
-      // history-row template fills in the article — e.g. "Alice brought
-      // over a note from the private canvas". Embedding the source in
-      // shapeType (rather than appending it separately, which the row
-      // template has no slot for) is safe for HistoryPanel's icon lookup
-      // too, since that checks the verb ("brought over") for the publish
-      // category before ever falling back to matching shapeType exactly
-      // against "note"/"image"/"text".
+      // BUG FIX (user report), three things:
       //
-      // actorId here deliberately prefers displayName over the raw uid —
-      // currentUserId (used elsewhere for room ids/presence, where the
-      // stable uid is actually what's wanted) put uid first, which is why
-      // published entries were showing a raw Firebase id instead of a
-      // name; every other logAction call in this app (CustomContextMenu,
-      // CommentBox, etc.) already prioritizes displayName the same way.
-      const publisherName = auth.currentUser?.displayName || currentUserId;
-      shapes.forEach((shape) => {
-        logAction({
+      // 1. Wrong name shown ("L5BkRgJ5jnfgnvYR57UP1Ux brought over a note"
+      // instead of "sam@lsu.edu brought over..."). Cause — this used
+      // `auth.currentUser?.displayName || currentUserId`, and
+      // currentUserId itself is defined as `uid || email` (uid first) —
+      // so for any account without a displayName set (most of them), this
+      // fell straight through to the raw uid instead of ever trying
+      // email. Every other logAction call site in this app (delete/add/
+      // update in CustomContextMenu, etc.) resolves the actor via
+      // resolveMyActorId, which tries displayName -> email -> uid in that
+      // order — using the same helper here instead of hand-rolling a
+      // different (and wrong) fallback chain is both the fix and what
+      // keeps this consistent with every other history row.
+      //
+      // 2. "from the private/public canvas" is no longer appended to the
+      // shape type at all — the row now just says "brought over a note",
+      // full stop, with no mention of which canvas it came from.
+      //
+      // 3. One row per shape used to mean publishing a multi-selection
+      // (e.g. 2 notes + 1 image) showed up as that many separate,
+      // identically-timestamped history entries. logBatchAction (see
+      // actionLog.js) writes all of them as a single row instead;
+      // HistoryPanel.js turns the item list into one summarized line
+      // ("brought over 2 notes and 1 image").
+      //
+      // 4. BUG FIX (user report): moving something INTO your private
+      // canvas was showing up in the shared PUBLIC history as both
+      // "<you> brought over 1 note" AND "<you> deleted a note" — neither
+      // of which is a team-relevant event (the private canvas is
+      // personal; nobody else can even see it). The "brought over" row
+      // is only worth logging for a move that lands somewhere everyone
+      // can see, i.e. private -> public, so it's skipped entirely here
+      // when the destination is private. The matching "deleted a note"
+      // half of this (logged by CustomContextMenu.js's generic
+      // shape-removed listener reacting to editor.deleteShapes() below)
+      // is suppressed separately — see the meta tag right before that
+      // call.
+      if (destinationMode !== "private") {
+        const publisherName = resolveMyActorId(auth.currentUser);
+        logBatchAction({
           className,
           projectName,
           teamName,
           actorId: publisherName,
           actorUid: auth.currentUser?.uid || null,
           verb: "brought over",
-          shapeId: shape.id,
-          shapeType: `${shape.type} from the ${sourceMode} canvas`,
-          textPreview: extractShapeText(shape),
-          imageUrl:
-            shape.type === "image" ? resolveImageUrl(editor, shape) || "" : "",
+          items: shapes.map((shape) => ({
+            shapeId: shape.id,
+            shapeType: shape.type,
+            textPreview: extractShapeText(shape),
+            imageUrl:
+              shape.type === "image"
+                ? resolveImageUrl(editor, shape) || ""
+                : "",
+          })),
         }).catch((err) =>
           console.error("[portal] failed to log publish action:", err)
         );
-      });
+      }
 
       // Snapshot the selection as an image + capture its on-screen rect
       // BEFORE deleting anything, so the fly-into-the-portal clone is an
@@ -1323,6 +1349,31 @@ const CollaborativeWhiteboard = () => {
         }
       } catch (err) {
         console.error("[portal] snapshot for publish animation failed:", err);
+      }
+
+      // Tag each shape right before it's removed so CustomContextMenu.js's
+      // generic shape-removed listener (which logs an ordinary "<you>
+      // deleted a note" for every local deletion — it has no way to know
+      // this one is actually a move into a private, non-team-visible
+      // space) can recognize and skip it. The removed record it receives
+      // is this shape's own last-known state, so this meta flag rides
+      // along with it. Only needed for the public -> private direction —
+      // see the "brought over" skip above for why.
+      if (destinationMode === "private") {
+        try {
+          editor.updateShapes(
+            shapes.map((shape) => ({
+              id: shape.id,
+              type: shape.type,
+              meta: { ...(shape.meta || {}), suppressHistoryLog: true },
+            }))
+          );
+        } catch (err) {
+          console.error(
+            "[portal] failed to tag shapes before private-move delete:",
+            err
+          );
+        }
       }
 
       // Real shapes disappear now — the animation clone (same image) takes

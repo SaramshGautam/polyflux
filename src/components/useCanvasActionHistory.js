@@ -46,6 +46,11 @@ function normalizeHistoryRow(docSnap) {
     shapeId: data.shapeId || "",
     text: data.textPreview || data.text || "",
     imageUrl: data.imageUrl || "",
+    // logBatchAction (actionLog.js) — one row covering several shapes at
+    // once (e.g. publishing a multi-selection). [{shapeId, shapeType,
+    // textPreview, imageUrl}, ...] when present; absent for ordinary
+    // single-shape rows written by logAction.
+    items: Array.isArray(data.items) ? data.items : null,
     timestamp: ts,
     // Which canvas this happened on ("public" | "private") — older docs
     // logged before this field existed default to "public", matching the

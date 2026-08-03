@@ -1,5 +1,5 @@
 // utils/actionLog.js
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, setDoc, addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebaseConfig";
 
 function bucketTime(ms, bucketMs = 1500) {
@@ -63,4 +63,53 @@ export async function logAction({
     },
     { merge: true }
   );
+}
+
+// One history row for an action that covers several shapes at once (e.g.
+// publishing a multi-selection across the portal) — logAction above always
+// writes one row per shape, which is right for ordinary edits but reads as
+// N separate "brought over a note" rows for what was really a single user
+// action. `items` is [{ shapeId, shapeType, textPreview, imageUrl }, ...];
+// HistoryPanel.js turns this into a single "brought over 2 notes and 1
+// image" row. Deliberately NOT using logAction's deterministic
+// setDoc+merge id scheme — that id is per-shape (verb:shapeId:uid:bucket),
+// which is exactly what makes rapid repeat edits of the SAME shape merge
+// safely. A batch has no single shapeId to key on, and reusing a
+// time-bucketed id here would risk two distinct rapid publishes by the
+// same person overwriting (not merging — Firestore doesn't deep-merge
+// arrays) each other's `items`. addDoc sidesteps that: every batch call is
+// always its own new row.
+export async function logBatchAction({
+  className,
+  projectName,
+  teamName,
+  actorId,
+  actorUid,
+  verb,
+  items,
+  space = "public",
+}) {
+  if (!Array.isArray(items) || !items.length) return;
+
+  const col = collection(
+    db,
+    "classrooms",
+    className,
+    "Projects",
+    projectName,
+    "teams",
+    teamName,
+    "actions"
+  );
+
+  await addDoc(col, {
+    actorId: actorId || "anon",
+    actorUid: actorUid || null,
+    verb,
+    items,
+    shapeIds: items.map((i) => i.shapeId).filter(Boolean),
+    space,
+    createdAt: serverTimestamp(),
+    clientTs: bucketTime(Date.now(), 1500),
+  });
 }

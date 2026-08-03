@@ -25,7 +25,7 @@ const TLDRAW_ICON_SPRITE =
 // real tlui icon name (hence it rendered as nothing) — "comment" is the
 // actual speech-bubble icon in tldraw's set.
 const CATEGORY_META = {
-  delete: { icon: "trash", label: "Deleted" },
+  delete: { icon: "trash", label: "Removed" },
   comment: { icon: "comment", label: "Comment" },
   reaction: { icon: "geo-heart", label: "Reaction" },
   publish: { icon: "share-1", label: "Brought over across the portal" },
@@ -46,6 +46,25 @@ function isHiddenHistoryEntry(entry) {
   return verb.includes("switched to");
 }
 
+// "2 notes and 1 image" from [{shapeType:"note"},{shapeType:"note"},{shapeType:"image"}]
+// — used for logBatchAction rows (entry.items), so a multi-shape publish
+// reads as one sentence instead of enumerating every item.
+function summarizeItemTypes(items) {
+  const counts = {};
+  items.forEach((item) => {
+    const t = item?.shapeType || "shape";
+    counts[t] = (counts[t] || 0) + 1;
+  });
+
+  const parts = Object.entries(counts).map(
+    ([type, count]) => `${count} ${count === 1 ? type : `${type}s`}`
+  );
+
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
+}
+
 // Categorize by verb first (delete/comment/reaction/publish can happen to
 // *any* shape type, and should read as that action, not as whatever shape
 // they happened to land on), then fall back to shapeType for plain
@@ -54,7 +73,10 @@ function getActionCategory(entry) {
   const verb = (entry.action || entry.verb || "").toLowerCase();
   const shapeType = entry.shapeType;
 
-  if (verb === "deleted") return "delete";
+  // "removed" is the current verb (see CustomContextMenu.js); "deleted"
+  // is kept here too so history rows written before that change still
+  // get the delete icon/styling instead of falling back to generic.
+  if (verb === "removed" || verb === "deleted") return "delete";
   if (verb.includes("comment")) return "comment";
   if (verb.includes("reacted")) return "reaction";
   if (verb.includes("brought over")) return "publish";
@@ -97,10 +119,25 @@ const HistoryRow = React.memo(function HistoryRow({
 
   const who = entry.userId || "Unknown User";
   const action = entry.action || entry.verb || "did";
-  const article = getIndefiniteArticle(entry.shapeType || "shape");
-  const line = `${who} ${action} ${article} ${entry.shapeType || "shape"}`;
 
-  const isClickable = !!(entry.shapeId && onHistoryItemClick);
+  // logBatchAction rows (e.g. publishing several shapes at once) carry
+  // `items` instead of a single shapeId/shapeType — one line summarizing
+  // all of them ("brought over 2 notes and 1 image") instead of the
+  // singular "brought over a note" template below.
+  const isBatch = Array.isArray(entry.items) && entry.items.length > 0;
+
+  const line = isBatch
+    ? `${who} ${action} ${summarizeItemTypes(entry.items)}`
+    : `${who} ${action} ${getIndefiniteArticle(
+        entry.shapeType || "shape"
+      )} ${entry.shapeType || "shape"}`;
+
+  // A batch entry has no single shape to jump to — click pans to the
+  // first item, same idea as "click to jump to it" for a single-shape row.
+  const clickTargetShapeId = isBatch
+    ? entry.items[0]?.shapeId
+    : entry.shapeId;
+  const isClickable = !!(clickTargetShapeId && onHistoryItemClick);
 
   const category = getActionCategory(entry);
   const { icon, label } = CATEGORY_META[category] || CATEGORY_META.shape;
@@ -109,14 +146,16 @@ const HistoryRow = React.memo(function HistoryRow({
   // text box — but only when the note itself is what was added/updated.
   // A *comment* left on a note (category "comment") still shows its text
   // in the regular quote style, since that text is the comment, not the
-  // note's own content.
-  const isNotePreview = category === "note";
+  // note's own content. Batch rows skip both previews entirely — with
+  // several, possibly mixed-type shapes in one entry, no single text/
+  // image preview unambiguously represents the row.
+  const isNotePreview = !isBatch && category === "note";
 
   return (
     <li
       className={`historyItem ${isClickable ? "historyItem--clickable" : ""}`}
       onClick={() => {
-        if (isClickable) onHistoryItemClick(entry.shapeId);
+        if (isClickable) onHistoryItemClick(clickTargetShapeId);
       }}
     >
       <div className="historyItemRow">

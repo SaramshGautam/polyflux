@@ -21,6 +21,7 @@ import {
   faTableColumns,
   faNoteSticky,
   faFont,
+  faTrashCan,
 } from "@fortawesome/free-solid-svg-icons";
 
 function linkifyText(text) {
@@ -384,8 +385,8 @@ const SimpleLinkPreview = ({ url, title }) => {
 // three-mode contract: "web_search" | "chatgpt_text" | "chatgpt_image").
 const MODE_BADGES = {
   web_search: { icon: "🌐", label: "Web Search" },
-  chatgpt_image: { icon: "🎨", label: "ChatGPT" },
-  chatgpt_text: { icon: "✨", label: "ChatGPT" },
+  chatgpt_image: { icon: "🎨", label: "PolyFlux AI" },
+  chatgpt_text: { icon: "✨", label: "PolyFlux AI" },
 };
 
 const ChatBot = ({
@@ -702,7 +703,8 @@ const ChatBot = ({
       // forceOpen below). Any other trigger source (explicit selection
       // sends, "open chat for this shape", etc.) still opens immediately
       // since those are direct user actions, not unprompted nudges.
-      const isProactiveNudge = source === "public-nudge" || source === "auto-nudge";
+      const isProactiveNudge =
+        source === "public-nudge" || source === "auto-nudge";
       if (!isProactiveNudge) {
         setIsOpen(true);
       }
@@ -761,6 +763,30 @@ const ChatBot = ({
 
         return next;
       });
+
+      // BUG FIX (user report): the floating "Ask AI" hover button (and
+      // "open chat for this shape" from the context menu) both dispatch
+      // trigger-chatbot via buildAiPayloadFromSelection, which only ever
+      // carries snippet/source/position/image_urls/meta{type,selection}
+      // — no real trigger/nudge data. That used to still get pushed into
+      // the chat as a generic nudge-styled message ("Noticing a pattern.
+      // Want a quick next step?" + "Selection sent to AI: ..."), which
+      // was just noise ahead of whatever the user was actually about to
+      // ask — the clip-note population above and opening the chat
+      // already surface the selection; no separate announcement message
+      // is needed. Any REAL nudge/trigger always sets at least one of
+      // these (text, chips, a role, or meta.trigger), so this only
+      // matches the bare selection-send case.
+      const isPlainSelectionSend =
+        !text &&
+        !meta?.trigger &&
+        !meta?.nudgeText &&
+        !roleType &&
+        !type &&
+        !(Array.isArray(chips) && chips.length) &&
+        !(Array.isArray(meta?.chips) && meta.chips.length);
+
+      if (isPlainSelectionSend) return;
 
       const resolvedType = String(
         roleType || type || meta?.role || meta?.trigger?.role || "nudge"
@@ -1894,9 +1920,7 @@ const ChatBot = ({
 
             return (
               <div key={`${listKey}-li-${i}`} className="chatbot-list-item">
-                <span className="chatbot-list-item-marker">
-                  {item.marker}
-                </span>
+                <span className="chatbot-list-item-marker">{item.marker}</span>
                 <span className="chatbot-list-item-text">
                   {renderRichInline(item.text, `${listKey}-li-${i}`)}
                 </span>
@@ -2502,7 +2526,11 @@ const ChatBot = ({
           <div ref={messagesEndRef} />
         </div>
 
-        <div className="chatbot-clipnote-bar">
+        <div
+          className={`chatbot-clipnote-bar${
+            clipNotes.length > 0 ? " has-clips" : ""
+          }`}
+        >
           {clipNotes.map((clip, index) => {
             const isImage =
               clip.kind === "image" ||
@@ -2524,24 +2552,33 @@ const ChatBot = ({
                 className="chatbot-clip-box"
                 title={clip.snip}
               >
-                {isImage ? (
-                  <img
-                    src={clip.snip}
-                    alt={label}
-                    className="chatbot-clip-img"
-                  />
-                ) : (
-                  <span className="chatbot-clip-text">
-                    {clip.snip.length > 30
-                      ? clip.snip.slice(0, 30) + "…"
-                      : clip.snip}
-                  </span>
-                )}
+                {/* Clipping (rounded corners around the image/text) lives
+                    on this inner wrapper now, not the outer box — the
+                    outer box used to have overflow:hidden itself, which
+                    clipped the delete button below (positioned just
+                    outside the box's edge) instead of letting it sit
+                    fully on top of the corner. */}
+                <div className="chatbot-clip-inner">
+                  {isImage ? (
+                    <img
+                      src={clip.snip}
+                      alt={label}
+                      className="chatbot-clip-img"
+                    />
+                  ) : (
+                    <span className="chatbot-clip-text">
+                      {clip.snip.length > 30
+                        ? clip.snip.slice(0, 30) + "…"
+                        : clip.snip}
+                    </span>
+                  )}
 
-                <div className="chatbot-clip-label">{label}</div>
+                  <div className="chatbot-clip-label">{label}</div>
+                </div>
 
                 <div
                   className="chatbot-clip-delete"
+                  title="Remove this item"
                   onClick={() => {
                     setClipNotes((prev) => prev.filter((_, i) => i !== index));
                   }}
@@ -2586,6 +2623,22 @@ const ChatBot = ({
               <FontAwesomeIcon icon={faPlusCircle} />
             )}
           </div>
+
+          {/* Clears every selected item at once — only shown once there's
+              actually something to clear. Sized to match the add-box
+              above it, with the icon stacked over the label instead of
+              inline, so it reads as a peer chip rather than a wide pill. */}
+          {clipNotes.length > 0 && (
+            <button
+              type="button"
+              className="chatbot-clip-clear-all"
+              title="Remove all selected items"
+              onClick={() => setClipNotes([])}
+            >
+              <FontAwesomeIcon icon={faTrashCan} />
+              <span>Clear all</span>
+            </button>
+          )}
         </div>
 
         <div className="chatbot-input">

@@ -518,6 +518,15 @@
   background: var(--pf-surface);
   flex-shrink: 0;
   overflow-x: auto;
+  transition: padding 150ms ease;
+}
+
+/* Once there's at least one selected item, give the whole bar (and each
+   chip — see .chatbot-clip-box below) a bit more room than the bare "+"
+   button alone needs — the cramped 40px chips were hard to read. */
+.chatbot-clipnote-bar.has-clips {
+  padding: 10px 12px;
+  gap: 10px;
 }
 
 .chatbot-clipnote-bar::-webkit-scrollbar {
@@ -540,7 +549,27 @@
   justify-content: center;
   align-items: center;
   font-size: 11px;
+  transition: width 150ms ease, height 150ms ease;
+  /* No overflow:hidden here anymore — that used to clip .chatbot-clip-delete
+     (positioned just past this box's own edge) instead of letting it sit
+     fully outside/on top of the corner. Clipping now happens one level in,
+     on .chatbot-clip-inner, which only wraps the image/text/label. */
+}
+
+.chatbot-clipnote-bar.has-clips .chatbot-clip-box {
+  width: 56px;
+  height: 56px;
+}
+
+.chatbot-clip-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
   overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 
 .chatbot-clip-box.add-box {
@@ -620,26 +649,84 @@
   color: var(--pf-text-muted);
 }
 
+.chatbot-clipnote-bar.has-clips .chatbot-clip-label,
+.chatbot-clipnote-bar.has-clips .chatbot-clip-text {
+  font-size: 9.5px;
+}
+
 .chatbot-clip-box:hover .chatbot-clip-delete {
   opacity: 1;
 }
 
 .chatbot-clip-delete {
   position: absolute;
-  top: -5px;
-  right: -5px;
-  width: 15px;
-  height: 15px;
+  /* Sits on the corner, mostly outside the chip — previously clipped by
+     the chip's own overflow:hidden (now moved to .chatbot-clip-inner, see
+     above), which cut this off and made it look stuck half inside the
+     box instead of surfaced on its edge. */
+  top: -7px;
+  right: -7px;
+  width: 17px;
+  height: 17px;
   display: grid;
   place-items: center;
   border-radius: 50%;
   background: #fff;
-  font-size: 13px;
+  border: 1.5px solid var(--pf-surface);
+  box-shadow: 0 1px 3px rgba(20, 22, 40, 0.28);
+  font-size: 14px;
   cursor: pointer;
   color: var(--pf-conflict);
   z-index: 5;
   opacity: 0;
   transition: opacity 160ms ease-in-out;
+}
+
+/* "Clear all" — removes every selected item at once. Square, same size as
+   the add-box "+" chip next to it (not a wide pill), icon stacked over the
+   label instead of side-by-side so it reads as a peer chip in the row. */
+.chatbot-clip-clear-all {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0 2px;
+  border-radius: var(--pf-radius-sm);
+  border: 1px solid var(--pf-border);
+  background: var(--pf-surface);
+  color: var(--pf-text-muted);
+  font-family: inherit;
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1.1;
+  text-align: center;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease,
+    width 150ms ease, height 150ms ease;
+}
+
+.chatbot-clip-clear-all svg {
+  font-size: 13px;
+}
+
+.chatbot-clipnote-bar.has-clips .chatbot-clip-clear-all {
+  width: 56px;
+  height: 56px;
+  font-size: 9.5px;
+}
+
+.chatbot-clipnote-bar.has-clips .chatbot-clip-clear-all svg {
+  font-size: 15px;
+}
+
+.chatbot-clip-clear-all:hover {
+  background: var(--pf-accent-soft);
+  color: var(--pf-conflict);
+  border-color: var(--pf-accent-soft-border);
 }
 
 .chatbot-message--highlight {
