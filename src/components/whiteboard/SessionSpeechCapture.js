@@ -101,9 +101,7 @@ export default function SessionSpeechCapture({
 
     let utteranceStartedAt = null;
 
-    recognition.onstart = () => {
-      console.log("[speech] recognition started");
-    };
+    recognition.onstart = () => {};
 
     recognition.onresult = async (event) => {
       let interim = "";
@@ -144,8 +142,6 @@ export default function SessionSpeechCapture({
     };
 
     recognition.onend = () => {
-      console.log("[speech] recognition ended");
-
       if (shouldKeepListeningRef.current) {
         try {
           recognition.start();

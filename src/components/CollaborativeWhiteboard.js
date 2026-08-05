@@ -2971,10 +2971,16 @@ const CollaborativeWhiteboard = () => {
 
     const recentUtterances = normalizedSpeechForAnalysis.slice(-delta);
 
+    // Raised from 3 to 6 words (user feedback): 3+ words let short
+    // backchannel/agreement ("let's do that", "yeah I agree", "okay sounds
+    // good") count as "meaningful" activity and bump toward a nudge, even
+    // though it's not really a new contribution. 6+ words targets
+    // actual sentence-level ideation instead.
+    const MEANINGFUL_UTTERANCE_MIN_WORDS = 6;
     const meaningfulUtterances = recentUtterances.filter((u) => {
       const text = String(u.text || "").trim();
       const words = text.split(/\s+/).filter(Boolean);
-      return words.length >= 3;
+      return words.length >= MEANINGFUL_UTTERANCE_MIN_WORDS;
     });
 
     if (meaningfulUtterances.length > 0) {
