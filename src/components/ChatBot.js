@@ -160,6 +160,12 @@ const QUICK_ROUND_CHIP = "Do a quick round: each person adds 1 idea";
 const SHARED_PROMPT_CHIP = "Create a shared prompt for everyone to react to";
 const QUICK_ROUND_ACK_CHIP = "I added mine ✓";
 
+// Current participation_imbalance_group chip (triggers_engine.py). Must
+// match that backend string exactly, same as the three above — this is a
+// plain string equality check in handleChipClick, not a fuzzy match.
+const INVITE_PARTICIPANTS_CHIP =
+  "Suggestion: Ask other participants to add their ideas";
+
 async function uploadB64ToFirebase({ storage, canvasId, b64, idx = 0 }) {
   const auth = getAuth();
   if (!auth.currentUser) {
@@ -979,6 +985,49 @@ const ChatBot = ({
           text: "What should the shared prompt be? Type it below and send it — I'll share it with everyone in the session.",
         },
       ]);
+      return;
+    }
+
+    if (chip === INVITE_PARTICIPANTS_CHIP) {
+      await logBotEvent("chip_click", {
+        chip: redactText(chip, 300),
+        role: String(roleType || "").toLowerCase(),
+        triggerId: nudgeMsg?.meta?.triggerId || null,
+      });
+      const askerId = user_id || "A teammate";
+      const askMessages = [...messages, { sender: "user", text: chip }];
+      setMessages(askMessages);
+      try {
+        // broadcastActivityNudge writes a public nudge to Firestore that
+        // every OTHER connected client picks up via the "nudges"
+        // onSnapshot listener in CollaborativeWhiteboard.js and renders
+        // as a chat message — that listener already filters out the
+        // publisher's own client (see the publishedBy === myUid check
+        // there), so this reaches everyone except the person who clicked.
+        await broadcastActivityNudge({
+          id: "participation_imbalance_group",
+          scope: "public",
+          role: "communicator",
+          label: "Participation imbalance",
+          user_text: `📣 ${askerId} is asking you to add your ideas.`,
+        });
+        setMessages([
+          ...askMessages,
+          {
+            sender: "bot",
+            text: "Sent — everyone else in the session just got a message asking them to add their ideas.",
+          },
+        ]);
+      } catch (e) {
+        console.error("Failed to broadcast participation invite:", e);
+        setMessages([
+          ...askMessages,
+          {
+            sender: "bot",
+            text: "Couldn't send that — please try again.",
+          },
+        ]);
+      }
       return;
     }
 
