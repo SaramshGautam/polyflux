@@ -298,7 +298,7 @@ const normKey = (v) =>
     .toLowerCase()
     .replace(/[\s-]+/g, "_"); // handles spaces, hyphens
 
-function getNudgeHeader({ phase, triggerId, triggerLabel }) {
+function getNudgeHeader({ phase, triggerId, triggerLabel, quoteText }) {
   const p = String(phase || "")
     .trim()
     .toLowerCase();
@@ -322,11 +322,6 @@ function getNudgeHeader({ phase, triggerId, triggerLabel }) {
     return "Circling around same ideas. Try a new angle.";
   }
 
-  // Long-running divergence
-  if (t === "long_running_divergence") {
-    return "Lots of new ideas. Pick few to develop on.";
-  }
-
   // Early convergence
   if (t === "early_convergence") {
     return "Ideas are too concerntrated. Let's spread it out.";
@@ -345,6 +340,26 @@ function getNudgeHeader({ phase, triggerId, triggerLabel }) {
   // Participation imbalance
   if (t === "participation_imbalance_group") {
     return "One voice is dominating. Invite quieter input.";
+  }
+
+  // Verbal, not captured. Unlike every trigger above, the useful part of
+  // this one isn't a fixed phrase — it's the actual thing someone said
+  // (see triggers_engine.py's _check_verbal_not_captured, which formats
+  // the full message as `You mentioned "..." — want to add that to the
+  // board?`). Pull the quote back out of quoteText (the message's own
+  // full text, passed in by the caller) so the collapsed pill shows what
+  // was actually said instead of a generic line — that's the whole point
+  // of this trigger. Falls back to a generic line when there's no quote
+  // to extract (the trigger's own no-quote fallback text, or an older
+  // cached message from before this field existed).
+  if (t === "verbal_not_captured") {
+    const match = /"([^"]+)"/.exec(String(quoteText || ""));
+    const quote = match?.[1]?.trim();
+    if (quote) {
+      const short = quote.length > 48 ? quote.slice(0, 45) + "…" : quote;
+      return `You said: "${short}"`;
+    }
+    return "Something you said hasn't made it to the board yet.";
   }
 
   // Facilitation activities started via a chip follow-through (see
@@ -700,6 +715,33 @@ const ChatBot = ({
         phase, // optional
       } = detail;
 
+      // Defense-in-depth, same rationale as runAnalyzeNudge's check above:
+      // whatever dispatched this "trigger-chatbot" event (CollaborativeWhiteboard's
+      // pushNudgeToChatbot, or the "nudges" Firestore listener) is supposed to
+      // have already filtered out private triggers meant for someone else
+      // before dispatching. Re-checking here means a bug in either of those
+      // dispatch sites can't leak a private nudge onto this client too.
+      const detailTrigger = meta?.trigger || null;
+      const detailScope = meta?.scope || detailTrigger?.scope || null;
+      const detailTargetActor =
+        meta?.target_actor ||
+        meta?.targetActor ||
+        detailTrigger?.target_actor ||
+        detailTrigger?.targetActor ||
+        null;
+      if (
+        detailScope &&
+        detailScope !== "public" &&
+        detailTargetActor &&
+        detailTargetActor !== user_id
+      ) {
+        console.debug(
+          "[nudge] suppressing private trigger-chatbot event not targeted at this actor",
+          { triggerId: detailTrigger?.id, targetActor: detailTargetActor }
+        );
+        return;
+      }
+
       // Proactive/public nudges are now surfaced first as a toast beside
       // the robot dock (see CollaborativeWhiteboard's showDockToast) —
       // this used to force the whole chat window open the instant a nudge
@@ -869,6 +911,18 @@ const ChatBot = ({
             phase: resolvedPhase || phase || meta?.phase || null,
             phaseTheme: theme,
             forceVisible: true,
+            // CALIBRATION: normalize triggerId/dedupeKey/score onto the
+            // message's top-level meta regardless of whether the caller
+            // nested them under meta.trigger or passed them flat — so
+            // handleChipClick's nudgeMsg?.meta?.dedupeKey reads reliably no
+            // matter which path (runAnalyzeNudge vs. this handler) produced
+            // the message. Without a consistent join key here, chip_click
+            // engagement events for externally-pushed nudges (e.g.
+            // long_lull's public broadcast) couldn't be matched back to the
+            // backend's nudge_events fire record at analysis time.
+            triggerId: meta?.triggerId || meta?.trigger?.id || null,
+            dedupeKey: dedupeKey || null,
+            score: meta?.trigger?.score ?? meta?.score ?? null,
           },
         },
       ]);
@@ -926,6 +980,10 @@ const ChatBot = ({
         chip: redactText(chip, 300),
         role: String(roleType || "").toLowerCase(),
         triggerId: nudgeMsg?.meta?.triggerId || null,
+        // CALIBRATION: join key back to the backend's nudge_events fire
+        // record (see app.py's write_nudge_event) and to this same
+        // message's nudge_shown log — see calibration/analyze_calibration.py.
+        dedupeKey: nudgeMsg?.meta?.dedupeKey || null,
       });
       const roundMessages = [...messages, { sender: "user", text: chip }];
       setMessages(roundMessages);
@@ -975,6 +1033,7 @@ const ChatBot = ({
         chip: redactText(chip, 300),
         role: String(roleType || "").toLowerCase(),
         triggerId: nudgeMsg?.meta?.triggerId || null,
+        dedupeKey: nudgeMsg?.meta?.dedupeKey || null,
       });
       pendingSharedPromptRef.current = true;
       setMessages([
@@ -993,6 +1052,7 @@ const ChatBot = ({
         chip: redactText(chip, 300),
         role: String(roleType || "").toLowerCase(),
         triggerId: nudgeMsg?.meta?.triggerId || null,
+        dedupeKey: nudgeMsg?.meta?.dedupeKey || null,
       });
       const askerId = user_id || "A teammate";
       const askMessages = [...messages, { sender: "user", text: chip }];
@@ -1013,19 +1073,13 @@ const ChatBot = ({
         });
         setMessages([
           ...askMessages,
-          {
-            sender: "bot",
-            text: "Sent — everyone else in the session just got a message asking them to add their ideas.",
-          },
+          { sender: "bot", text: "Done — I let the team know." },
         ]);
       } catch (e) {
         console.error("Failed to broadcast participation invite:", e);
         setMessages([
           ...askMessages,
-          {
-            sender: "bot",
-            text: "Couldn't send that — please try again.",
-          },
+          { sender: "bot", text: "Couldn't send that — try again?" },
         ]);
       }
       return;
@@ -1035,6 +1089,7 @@ const ChatBot = ({
       chip: redactText(chip, 300),
       role: String(roleType || "").toLowerCase(),
       triggerId: nudgeMsg?.meta?.triggerId || null,
+      dedupeKey: nudgeMsg?.meta?.dedupeKey || null,
       phase: nudgeMsg?.meta?.phase || null,
       tailShapeIdsCount: Array.isArray(nudgeMsg?.meta?.tailShapeIds)
         ? nudgeMsg.meta.tailShapeIds.length
@@ -1313,6 +1368,29 @@ const ChatBot = ({
       }
 
       const trigger = data.trigger || null;
+
+      // Defense-in-depth: app.py's /analyze already refuses to put a
+      // privately-targeted trigger (participation_imbalance_group,
+      // verbal_not_captured, etc.) in the response for anyone but its
+      // target_actor — it queues it for that person's own next poll
+      // instead (see _queue_pending_nudge/_pop_pending_nudge). This
+      // mirrors that same check client-side, the same pattern
+      // CollaborativeWhiteboard.js's pushNudgeToChatbot already uses, so
+      // a bug or a future change on the server side can't surface someone
+      // else's private nudge in this chat window.
+      if (
+        trigger?.scope &&
+        trigger.scope !== "public" &&
+        trigger.target_actor &&
+        trigger.target_actor !== user_id
+      ) {
+        console.debug(
+          "[nudge] suppressing private trigger not targeted at this actor",
+          { triggerId: trigger.id, targetActor: trigger.target_actor }
+        );
+        return;
+      }
+
       const metrics = data.metrics || null;
 
       const windows = Array.isArray(data.windows) ? data.windows : [];
@@ -1465,8 +1543,20 @@ const ChatBot = ({
         // auto
         if (isTriggerHit) {
           const changedTrigger = triggerId !== lastN.triggerId;
+          // BUG FIX: use the backend's own per-trigger cooldown_sec (see
+          // app.py's /analyze response and triggers_engine.py's
+          // get_trigger_cooldown_sec — 120s vs 300s depending on trigger
+          // id) instead of the fixed NUDGE_NOTIFY_COOLDOWN_MS for every
+          // trigger. Same fix as CollaborativeWhiteboard.js's
+          // pushNudgeToChatbot; NUDGE_NOTIFY_COOLDOWN_MS remains the
+          // fallback for responses that don't carry cooldown_sec.
+          const triggerCooldownMs =
+            typeof trigger?.cooldown_sec === "number" &&
+            trigger.cooldown_sec > 0
+              ? trigger.cooldown_sec * 1000
+              : NUDGE_NOTIFY_COOLDOWN_MS;
           const cooldownPassed =
-            nowTs - (lastN.time || 0) > NUDGE_NOTIFY_COOLDOWN_MS;
+            nowTs - (lastN.time || 0) > triggerCooldownMs;
 
           if (changedTrigger || cooldownPassed) {
             shouldNotify = true;
@@ -1474,12 +1564,33 @@ const ChatBot = ({
         }
       }
 
-      if (shouldNotify) {
-        lastNotifiedRef.current = { triggerId, time: nowTs };
+      // BUG FIX: shouldNotify was computed above per the "notify only when
+      // a trigger hits AND we haven't notified recently" rule, but nothing
+      // actually gated the logBotEvent/setMessages calls below on it — they
+      // ran unconditionally, so "auto" mode pushed a chat message on every
+      // successful poll: either the real trigger text, or (when trigger was
+      // null — including the now-common case where a private trigger fired
+      // but was queued for someone else, see the target_actor gate above)
+      // the generic "I analyzed your recent activity..." filler. Bailing
+      // out here when shouldNotify is false restores the documented intent:
+      // auto-mode stays silent unless there's something new to say. Button
+      // mode is unaffected — shouldNotify is always true for it.
+      if (!shouldNotify) {
+        lastAnalyzeRef.current.time = now;
+        lastAnalyzeRef.current.moveCount = activityCount;
+        return;
       }
+      lastNotifiedRef.current = { triggerId, time: nowTs };
       const msgTheme = getPhaseTheme(phase);
 
       // Log: analyze nudge appeared in chat
+      // CALIBRATION: score + dedupeKey added so this event can be joined
+      // (via dedupeKey) against the backend's nudge_events fire record —
+      // see app.py's write_nudge_event call — which carries the same
+      // dedupeKey plus the raw metric snapshot the trigger fired on. score
+      // alone wasn't previously sent from the backend to the frontend at
+      // all (trigger_res.score was computed for ranking, then discarded);
+      // see the "score" key added to fresh_trigger_payload in app.py.
       await logBotEvent("nudge_shown", {
         source, // "auto" or "button"
         phase,
@@ -1487,6 +1598,8 @@ const ChatBot = ({
         stablePhase,
         triggerId: trigger?.id || null,
         triggerLabel: trigger?.label || null,
+        dedupeKey: trigger?.dedupe_key || null,
+        score: typeof trigger?.score === "number" ? trigger.score : null,
         role: nudgeType,
         chipsCount: Array.isArray(chips) ? chips.length : 0,
         tailShapeIdsCount: Array.isArray(tailShapeIds)
@@ -1515,6 +1628,12 @@ const ChatBot = ({
             triggerId: trigger?.id || null,
             forceVisible: true,
             triggerLabel: trigger?.label || backendNudge?.label || null,
+            // CALIBRATION: carried on the message so handleChipClick can
+            // stamp any resulting chip_click with the same join key (see
+            // the dedupeKey field added to each chip_click logBotEvent
+            // call below).
+            dedupeKey: trigger?.dedupe_key || null,
+            score: typeof trigger?.score === "number" ? trigger.score : null,
           },
         },
       ]);
@@ -2405,6 +2524,7 @@ const ChatBot = ({
                             phase: msg.meta?.phase,
                             triggerId: msg.meta?.triggerId,
                             triggerLabel: msg.meta?.triggerLabel,
+                            quoteText: msg.text,
                           })}
                       </span>
                     </div>

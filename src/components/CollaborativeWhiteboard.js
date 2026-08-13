@@ -2837,9 +2837,15 @@ const CollaborativeWhiteboard = () => {
       // participant, see triggers_engine.py's target_actor). If the
       // backend named a specific target and it isn't me, suppress this
       // nudge entirely on this client rather than showing it to the
-      // wrong person. No target_actor (e.g. long_lull, which has no
-      // single "who" to target) keeps today's behavior: whoever's client
-      // sees it, sees it.
+      // wrong person. A private-scoped trigger with no target_actor would
+      // fall through this check unfiltered (shown to whoever's client
+      // sees it, not suppressed) — but as of triggers_engine.py, every
+      // trigger that has no single "who" to target (long_lull included)
+      // is scope="public" instead, which takes the branch below and
+      // actually broadcasts to the whole team via Firestore rather than
+      // landing on just one random client. "private + no target_actor" is
+      // not expected to occur anymore; this branch is defensive, not the
+      // intended path for a group-wide nudge.
       if (scope !== "public" && trigger.target_actor) {
         const myActorId = resolveMyActorId(auth.currentUser);
         if (myActorId !== trigger.target_actor) {
@@ -2876,12 +2882,34 @@ const CollaborativeWhiteboard = () => {
 
       if (source === "proactive" && text) {
         const now = Date.now();
+
+        // BUG FIX: this used to gate every trigger id with the same fixed
+        // NUDGE_COOLDOWN_MS (2 min), ignoring the backend's own per-trigger
+        // cooldown_sec (triggers_engine.py's get_trigger_cooldown_sec — 120s
+        // for participation_imbalance_group/verbal_not_captured, 300s for
+        // the rest, see app.py's /analyze response). That made the shorter,
+        // more time-sensitive cooldowns pointless end-to-end: even when the
+        // backend was willing to re-fire a trigger sooner, this client-side
+        // gate silently held it back to the same blanket 2 minutes anyway.
+        // NUDGE_COOLDOWN_MS now only applies as a fallback for responses
+        // that don't carry cooldown_sec (older backend, or a queued/pending
+        // nudge payload from before this field existed).
+        const triggerCooldownMs =
+          typeof trigger.cooldown_sec === "number" && trigger.cooldown_sec > 0
+            ? trigger.cooldown_sec * 1000
+            : NUDGE_COOLDOWN_MS;
+
         const lastAt = autoTriggerCooldownMapRef.current[trigger.id] || 0;
-        if (now - lastAt < NUDGE_COOLDOWN_MS) {
+        if (now - lastAt < triggerCooldownMs) {
           return;
         }
 
         autoTriggerCooldownMapRef.current[trigger.id] = now;
+        // Global cooldown (how often ANY proactive nudge, regardless of
+        // which trigger, is allowed to interrupt) is a separate concern
+        // from a single trigger's own re-fire pacing above, and the backend
+        // doesn't express a per-episode value for it — left on the fixed
+        // constant intentionally.
         autoGlobalCooldownUntilRef.current = now + NUDGE_COOLDOWN_MS;
 
         const chatbotPayload = {
